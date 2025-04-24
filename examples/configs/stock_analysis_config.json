@@ -1,0 +1,185 @@
+{
+  "processing": {
+    "vector_dimension": 10000,
+    "vector_type": "binary",
+    "reasoning_approach": "weighted",
+    "certainty_propagation": "min",
+    "recalibration_enabled": true,
+    "max_reasoning_depth": 5,
+    "domain": "finance",
+    "domain_config": {
+      "positive_outcome_keywords": ["buy", "bullish", "upside", "growth", "undervalued"],
+      "negative_outcome_keywords": ["sell", "bearish", "downside", "decline", "overvalued"],
+      "neutral_outcome_keywords": ["hold", "neutral", "stable", "fair valued"],
+      "outcome_field": "recommendation",
+      "positive_outcome": "BUY",
+      "negative_outcome": "SELL",
+      "neutral_outcome": "HOLD",
+      "metric_definitions": [
+        {
+          "name": "pe_ratio",
+          "description": "Price-to-Earnings Ratio",
+          "thresholds": {
+            "low": {"value": 15, "interpretation": "potentially undervalued"},
+            "high": {"value": 30, "interpretation": "potentially overvalued"},
+            "industry_relative": true
+          }
+        },
+        {
+          "name": "revenue_growth",
+          "description": "Year-over-Year Revenue Growth",
+          "thresholds": {
+            "negative": {"value": 0, "interpretation": "concerning"},
+            "low": {"value": 0.05, "interpretation": "below average"},
+            "high": {"value": 0.15, "interpretation": "strong"}
+          }
+        },
+        {
+          "name": "profit_margin",
+          "description": "Net Profit Margin",
+          "thresholds": {
+            "low": {"value": 0.05, "interpretation": "thin margins"},
+            "high": {"value": 0.15, "interpretation": "strong margins"}
+          }
+        },
+        {
+          "name": "debt_to_equity",
+          "description": "Debt-to-Equity Ratio",
+          "thresholds": {
+            "low": {"value": 0.5, "interpretation": "conservative financing"},
+            "high": {"value": 1.5, "interpretation": "aggressive financing"},
+            "industry_relative": true
+          }
+        },
+        {
+          "name": "return_on_equity",
+          "description": "Return on Equity",
+          "thresholds": {
+            "low": {"value": 0.1, "interpretation": "poor capital efficiency"},
+            "high": {"value": 0.2, "interpretation": "strong capital efficiency"}
+          }
+        },
+        {
+          "name": "price_movement",
+          "description": "Price Movement (6-month)",
+          "thresholds": {
+            "negative": {"value": -0.05, "interpretation": "bearish momentum"},
+            "positive": {"value": 0.05, "interpretation": "bullish momentum"},
+            "market_relative": true
+          }
+        },
+        {
+          "name": "analyst_sentiment",
+          "description": "Analyst Ratings",
+          "thresholds": {
+            "low": {"value": 0.4, "interpretation": "bearish analyst consensus"},
+            "high": {"value": 0.7, "interpretation": "bullish analyst consensus"}
+          }
+        }
+      ],
+      "weighting": {
+        "valuation_metrics": 0.25,
+        "growth_metrics": 0.25,
+        "financial_health": 0.2,
+        "momentum_indicators": 0.15,
+        "sentiment_indicators": 0.15
+      }
+    }
+  },
+  "persistence": {
+    "load_previous_state": false,
+    "save_state": true,
+    "state_save_path": "./output/stock_analysis_state.pkl",
+    "vector_store_path": "./output/stock_analysis_vectors.faiss"
+  },
+  "logging": {
+    "log_level": "info",
+    "log_path": "./logs/stock_analysis.log",
+    "include_vector_operations": false,
+    "include_llm_interactions": true,
+    "include_reasoning_steps": true,
+    "explanation_detail_level": "medium"
+  },
+  "llm": {
+    "model": "gpt-4",
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "embedding_model": "text-embedding-ada-002",
+    "embedding_dimension": 1536,
+    "cache_enabled": true,
+    "cache_path": "./cache/llm_cache.json"
+  },
+  "input_data": {
+    "rules": [
+      {"text": "If the P/E ratio is below industry average, then the stock is potentially undervalued.", "certainty": 0.8},
+      {"text": "If revenue growth is accelerating for three consecutive quarters, then the company is in a growth phase.", "certainty": 0.9},
+      {"text": "If profit margins are expanding year-over-year, then the company is improving operational efficiency.", "certainty": 0.85},
+      {"text": "If a stock is undervalued and the company is in a growth phase, then it's a strong buy signal.", "certainty": 0.85},
+      {"text": "If a stock is undervalued and profit margins are expanding, then it's a buy signal.", "certainty": 0.8},
+      {"text": "If the debt-to-equity ratio is decreasing, then the company's financial health is improving.", "certainty": 0.75},
+      {"text": "If a company has high debt and declining revenue, then it's a sell signal.", "certainty": 0.8},
+      {"text": "If analyst sentiment is predominantly positive, then the stock is likely to outperform the market.", "certainty": 0.7},
+      {"text": "If a stock has outperformed the market for the last 6 months, it may be overvalued.", "certainty": 0.6},
+      {"text": "If a company has missed earnings expectations for two consecutive quarters, it's a cautionary signal.", "certainty": 0.75}
+    ],
+    "entities": [
+      {
+        "id": "AAPL",
+        "name": "Apple Inc.",
+        "sector": "Technology",
+        "facts": [
+          {"text": "P/E ratio is 28.5, which is below the technology industry average of 32.8.", "certainty": 0.95},
+          {"text": "Revenue growth has accelerated for four consecutive quarters.", "certainty": 0.9},
+          {"text": "Profit margins have expanded from 21% to 23% year-over-year.", "certainty": 0.85},
+          {"text": "Debt-to-equity ratio has decreased from 1.5 to 1.2 over the past year.", "certainty": 0.9},
+          {"text": "The stock has returned 15% over the past 6 months, compared to 10% for the S&P 500.", "certainty": 0.95},
+          {"text": "85% of analysts have a positive rating on the stock.", "certainty": 0.8}
+        ]
+      },
+      {
+        "id": "MSFT",
+        "name": "Microsoft Corporation",
+        "sector": "Technology",
+        "facts": [
+          {"text": "P/E ratio is 34.2, which is slightly above the technology industry average of 32.8.", "certainty": 0.95},
+          {"text": "Revenue growth has accelerated for three consecutive quarters.", "certainty": 0.9},
+          {"text": "Profit margins have expanded from 35% to 37% year-over-year.", "certainty": 0.85},
+          {"text": "Debt-to-equity ratio has remained stable at 0.5 over the past year.", "certainty": 0.95},
+          {"text": "The stock has returned 18% over the past 6 months, compared to 10% for the S&P 500.", "certainty": 0.95},
+          {"text": "90% of analysts have a positive rating on the stock.", "certainty": 0.85}
+        ]
+      },
+      {
+        "id": "GM",
+        "name": "General Motors Company",
+        "sector": "Automotive",
+        "facts": [
+          {"text": "P/E ratio is 5.8, which is below the automotive industry average of 8.4.", "certainty": 0.95},
+          {"text": "Revenue growth has slowed for two consecutive quarters.", "certainty": 0.85},
+          {"text": "Profit margins have contracted from 8% to 6% year-over-year.", "certainty": 0.9},
+          {"text": "Debt-to-equity ratio has increased from 1.2 to 1.4 over the past year.", "certainty": 0.9},
+          {"text": "The stock has returned -5% over the past 6 months, compared to 10% for the S&P 500.", "certainty": 0.95},
+          {"text": "40% of analysts have a positive rating on the stock.", "certainty": 0.8}
+        ]
+      }
+    ]
+  },
+  "output_schema": {
+    "format": "json",
+    "fields": [
+      {"name": "ticker", "type": "string"},
+      {"name": "name", "type": "string"},
+      {"name": "sector", "type": "string"},
+      {"name": "recommendation", "type": "string"},
+      {"name": "certainty", "type": "float"},
+      {"name": "buy_signals", "type": "integer"},
+      {"name": "sell_signals", "type": "integer"},
+      {"name": "reasoning", "type": "object"}
+    ],
+    "include_reasoning_trace": true,
+    "include_explanation": true,
+    "include_vector_details": false,
+    "explanation_template": "Based on our analysis, we {{recommendation_verb}} {{ticker}} stock with {{certainty_percentage}}% confidence. This recommendation is based on {{positive_count}} positive and {{negative_count}} negative factors. Key considerations include {{key_factors}}.",
+    "domain": "finance"
+  }
+}
