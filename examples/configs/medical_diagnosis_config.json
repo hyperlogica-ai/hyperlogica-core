@@ -1,0 +1,269 @@
+{
+    "processing": {
+      "vector_dimension": 10000,
+      "vector_type": "continuous",
+      "reasoning_approach": "bayesian",
+      "certainty_propagation": "product",
+      "recalibration_enabled": true,
+      "max_reasoning_depth": 8,
+      "domain": "medical",
+      "domain_config": {
+        "positive_outcome_keywords": ["confirmed", "present", "positive", "diagnosed"],
+        "negative_outcome_keywords": ["excluded", "absent", "negative", "ruled out"],
+        "neutral_outcome_keywords": ["possible", "indeterminate", "inconclusive", "suspected"],
+        "outcome_field": "diagnosis",
+        "positive_outcome": "CONFIRMED",
+        "negative_outcome": "EXCLUDED",
+        "neutral_outcome": "SUSPECTED",
+        "condition_categories": [
+          {
+            "name": "cardiovascular",
+            "conditions": ["hypertension", "coronary_artery_disease", "heart_failure", "arrhythmia"]
+          },
+          {
+            "name": "respiratory",
+            "conditions": ["asthma", "pneumonia", "copd", "pulmonary_embolism"]
+          },
+          {
+            "name": "gastrointestinal",
+            "conditions": ["gastritis", "peptic_ulcer", "inflammatory_bowel_disease", "cirrhosis"]
+          },
+          {
+            "name": "neurological",
+            "conditions": ["migraine", "stroke", "epilepsy", "multiple_sclerosis"]
+          },
+          {
+            "name": "endocrine",
+            "conditions": ["diabetes", "hypothyroidism", "hyperthyroidism", "adrenal_insufficiency"]
+          }
+        ],
+        "symptom_definitions": [
+          {
+            "name": "chest_pain",
+            "definition": "Pain or discomfort in the chest",
+            "sensitivity": {
+              "coronary_artery_disease": 0.85,
+              "pneumonia": 0.35,
+              "pulmonary_embolism": 0.75,
+              "gastritis": 0.45
+            }
+          },
+          {
+            "name": "shortness_of_breath",
+            "definition": "Difficulty breathing or dyspnea",
+            "sensitivity": {
+              "heart_failure": 0.85,
+              "asthma": 0.90,
+              "pneumonia": 0.80,
+              "copd": 0.92,
+              "pulmonary_embolism": 0.85
+            }
+          },
+          {
+            "name": "fatigue",
+            "definition": "Feeling of tiredness or exhaustion",
+            "sensitivity": {
+              "heart_failure": 0.75,
+              "anemia": 0.90,
+              "hypothyroidism": 0.85,
+              "depression": 0.70
+            }
+          },
+          {
+            "name": "headache",
+            "definition": "Pain in the head or upper neck",
+            "sensitivity": {
+              "migraine": 0.95,
+              "tension_headache": 0.85,
+              "stroke": 0.30,
+              "meningitis": 0.70
+            }
+          },
+          {
+            "name": "abdominal_pain",
+            "definition": "Pain in the abdomen",
+            "sensitivity": {
+              "gastritis": 0.80,
+              "peptic_ulcer": 0.85,
+              "inflammatory_bowel_disease": 0.75,
+              "appendicitis": 0.90
+            }
+          }
+        ],
+        "test_definitions": [
+          {
+            "name": "ecg",
+            "definition": "Electrocardiogram",
+            "sensitivity": {
+              "coronary_artery_disease": 0.70,
+              "arrhythmia": 0.90,
+              "heart_failure": 0.60
+            },
+            "specificity": {
+              "coronary_artery_disease": 0.85,
+              "arrhythmia": 0.95,
+              "heart_failure": 0.70
+            }
+          },
+          {
+            "name": "chest_xray",
+            "definition": "Chest X-ray imaging",
+            "sensitivity": {
+              "pneumonia": 0.75,
+              "heart_failure": 0.70,
+              "copd": 0.65
+            },
+            "specificity": {
+              "pneumonia": 0.80,
+              "heart_failure": 0.75,
+              "copd": 0.70
+            }
+          },
+          {
+            "name": "blood_test",
+            "definition": "Complete blood count and chemistry",
+            "sensitivity": {
+              "anemia": 0.95,
+              "diabetes": 0.90,
+              "hypothyroidism": 0.85
+            },
+            "specificity": {
+              "anemia": 0.98,
+              "diabetes": 0.95,
+              "hypothyroidism": 0.90
+            }
+          }
+        ],
+        "prior_probabilities": {
+          "coronary_artery_disease": 0.12,
+          "heart_failure": 0.08,
+          "arrhythmia": 0.07,
+          "pneumonia": 0.05,
+          "asthma": 0.10,
+          "copd": 0.06,
+          "pulmonary_embolism": 0.02,
+          "gastritis": 0.10,
+          "peptic_ulcer": 0.04,
+          "inflammatory_bowel_disease": 0.03,
+          "migraine": 0.15,
+          "stroke": 0.03,
+          "diabetes": 0.10,
+          "hypothyroidism": 0.05
+        },
+        "certainty_thresholds": {
+          "confirmed": 0.85,
+          "suspected": 0.40,
+          "excluded": 0.15
+        }
+      }
+    },
+    "persistence": {
+      "load_previous_state": false,
+      "save_state": true,
+      "state_save_path": "./output/medical_diagnosis_state.pkl",
+      "vector_store_path": "./output/medical_vectors.faiss"
+    },
+    "logging": {
+      "log_level": "info",
+      "log_path": "./logs/medical_diagnosis.log",
+      "include_vector_operations": false,
+      "include_llm_interactions": true,
+      "include_reasoning_steps": true,
+      "explanation_detail_level": "high"
+    },
+    "llm": {
+      "model": "gpt-4",
+      "temperature": 0.0,
+      "max_tokens": 2500,
+      "embedding_model": "text-embedding-ada-002",
+      "embedding_dimension": 1536,
+      "cache_enabled": true,
+      "cache_path": "./cache/medical_llm_cache.json"
+    },
+    "input_data": {
+      "rules": [
+        {"text": "If a patient has chest pain and shortness of breath, then coronary artery disease should be suspected.", "certainty": 0.7},
+        {"text": "If a patient has shortness of breath and fatigue, then heart failure should be suspected.", "certainty": 0.65},
+        {"text": "If a patient has wheezing and shortness of breath, then asthma should be suspected.", "certainty": 0.75},
+        {"text": "If a patient has cough, fever, and shortness of breath, then pneumonia should be suspected.", "certainty": 0.8},
+        {"text": "If a patient has sudden chest pain, shortness of breath, and risk factors, then pulmonary embolism should be suspected.", "certainty": 0.7},
+        {"text": "If a patient has abdominal pain and heartburn, then gastritis should be suspected.", "certainty": 0.65},
+        {"text": "If a patient has abdominal pain and hematemesis, then peptic ulcer should be suspected.", "certainty": 0.75},
+        {"text": "If ECG shows ST elevation, then myocardial infarction is likely.", "certainty": 0.85},
+        {"text": "If chest X-ray shows consolidation, then pneumonia is likely.", "certainty": 0.8},
+        {"text": "If blood tests show elevated glucose, then diabetes should be suspected.", "certainty": 0.85},
+        {"text": "If blood tests show low TSH and elevated T4, then hyperthyroidism should be suspected.", "certainty": 0.9},
+        {"text": "If multiple diagnostic tests for a condition are negative, then the condition should be excluded.", "certainty": 0.85},
+        {"text": "If a condition has a posterior probability above 0.85, then the condition is confirmed.", "certainty": 0.95},
+        {"text": "If a condition has a posterior probability below 0.15, then the condition is excluded.", "certainty": 0.9}
+      ],
+      "entities": [
+        {
+          "id": "patient_001",
+          "name": "Patient 001",
+          "age": 65,
+          "sex": "male",
+          "facts": [
+            {"text": "Patient presents with chest pain that worsens with exertion.", "certainty": 0.9},
+            {"text": "Patient reports shortness of breath for the past two weeks.", "certainty": 0.85},
+            {"text": "Patient has a history of hypertension and hyperlipidemia.", "certainty": 0.95},
+            {"text": "ECG shows minor ST depression in leads II, III, and aVF.", "certainty": 0.9},
+            {"text": "Chest X-ray is normal with no signs of consolidation or effusion.", "certainty": 0.85},
+            {"text": "Troponin levels are mildly elevated at 0.04 ng/mL.", "certainty": 0.95},
+            {"text": "Patient reports fatigue and decreased exercise tolerance.", "certainty": 0.8},
+            {"text": "No fever or productive cough reported.", "certainty": 0.9},
+            {"text": "Lung auscultation reveals clear breath sounds bilaterally.", "certainty": 0.85}
+          ]
+        },
+        {
+          "id": "patient_002",
+          "name": "Patient 002",
+          "age": 42,
+          "sex": "female",
+          "facts": [
+            {"text": "Patient presents with recurring headaches, primarily on one side.", "certainty": 0.95},
+            {"text": "Patient reports visual disturbances preceding headache episodes.", "certainty": 0.85},
+            {"text": "Headaches are associated with nausea and sensitivity to light.", "certainty": 0.9},
+            {"text": "Neurological examination is normal.", "certainty": 0.9},
+            {"text": "Brain MRI shows no structural abnormalities.", "certainty": 0.95},
+            {"text": "Patient reports family history of migraines.", "certainty": 0.8},
+            {"text": "No recent trauma or loss of consciousness reported.", "certainty": 0.9},
+            {"text": "Symptoms typically last 4-6 hours and respond to sumatriptan.", "certainty": 0.85}
+          ]
+        },
+        {
+          "id": "patient_003",
+          "name": "Patient 003",
+          "age": 58,
+          "sex": "male",
+          "facts": [
+            {"text": "Patient presents with shortness of breath, worse when lying flat.", "certainty": 0.9},
+            {"text": "Patient reports ankle swelling and fatigue.", "certainty": 0.85},
+            {"text": "History of myocardial infarction 5 years ago.", "certainty": 0.95},
+            {"text": "ECG shows left ventricular hypertrophy and Q waves in anterior leads.", "certainty": 0.9},
+            {"text": "Chest X-ray shows cardiomegaly and pulmonary congestion.", "certainty": 0.85},
+            {"text": "BNP level is elevated at 750 pg/mL.", "certainty": 0.95},
+            {"text": "Echocardiogram shows reduced ejection fraction of 35%.", "certainty": 0.9},
+            {"text": "Lung auscultation reveals bibasilar crackles.", "certainty": 0.85}
+          ]
+        }
+      ]
+    },
+    "output_schema": {
+      "format": "json",
+      "fields": [
+        {"name": "patient_id", "type": "string"},
+        {"name": "name", "type": "string"},
+        {"name": "age", "type": "integer"},
+        {"name": "sex", "type": "string"},
+        {"name": "diagnosis", "type": "string"},
+        {"name": "diagnosis_status", "type": "string"},
+        {"name": "certainty", "type": "float"},
+        {"name": "reasoning", "type": "object"}
+      ],
+      "include_reasoning_trace": true,
+      "include_explanation": true,
+      "include_vector_details": false,
+      "domain": "medical"
+    }
+}
