@@ -13,7 +13,7 @@ of detail in logs and different output formats.
 import os
 import json
 import logging
-import datetime
+from datetime import datetime
 import time
 from typing import Dict, List, Any, Optional, Callable, Union
 import numpy as np
@@ -42,14 +42,7 @@ def create_directory_if_not_exists(path: str) -> None:
     if directory and not os.path.exists(directory):
         os.makedirs(directory)
 
-def initialize_logger(
-    log_path: str, 
-    log_level: str = "info",
-    console_output: bool = True,
-    include_vector_operations: bool = False,
-    include_llm_interactions: bool = True,
-    include_reasoning_steps: bool = True
-) -> Dict[str, Any]:
+def initialize_logger(log_path: str, log_level: str) -> logging.Logger:
     """
     Initialize the logging system.
     
@@ -57,123 +50,48 @@ def initialize_logger(
         log_path (str): Path where log files should be stored.
         log_level (str): Minimum log level to record. Options include:
                          "debug", "info", "warning", "error".
-        console_output (bool): Whether to also output logs to the console.
-        include_vector_operations (bool): Whether to log detailed vector operations.
-        include_llm_interactions (bool): Whether to log LLM API interactions.
-        include_reasoning_steps (bool): Whether to log reasoning steps.
         
     Returns:
-        Dict[str, Any]: Logger configuration dictionary containing the configured 
-                    loggers and settings for different log types.
-        
-    Raises:
-        IOError: If the log directory doesn't exist or isn't writable.
-        ValueError: If an invalid log level is specified.
+        logging.Logger: Configured logger object.
     """
-    # Validate log level
-    valid_levels = {
+    # Create directory if it doesn't exist
+    os.makedirs(log_path, exist_ok=True)
+    
+    # Configure level
+    level_map = {
         "debug": logging.DEBUG,
         "info": logging.INFO,
         "warning": logging.WARNING,
         "error": logging.ERROR
     }
+    log_level = level_map.get(log_level.lower(), logging.INFO)
     
-    if log_level.lower() not in valid_levels:
-        raise ValueError(f"Invalid log level: {log_level}. Valid options are: {', '.join(valid_levels.keys())}")
+    # Configure logger
+    logger = logging.getLogger("hyperlogica.main")
+    logger.setLevel(log_level)
     
-    numeric_level = valid_levels[log_level.lower()]
+    # Clear existing handlers
+    if logger.handlers:
+        logger.handlers.clear()
     
-    # Create log directory if it doesn't exist
-    create_directory_if_not_exists(log_path)
+    # File handler
+    log_file = os.path.join(log_path, f"hyperlogica_{datetime.now().strftime('%Y%m%d')}.log")
+    file_handler = logging.FileHandler(log_file)
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+                                      datefmt='%Y-%m-%d %H:%M:%S')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
     
-    # Create main logger
-    main_logger = logging.getLogger("hyperlogica.main")
-    main_logger.setLevel(numeric_level)
-    main_logger.handlers = []  # Clear any existing handlers
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', 
+                                         datefmt='%H:%M:%S')
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
     
-    # Create a file handler for the main logger
-    main_file_handler = logging.FileHandler(os.path.join(log_path, "hyperlogica.log"))
-    main_file_handler.setLevel(numeric_level)
+    logger.info("Logging system initialized with level: %s", log_level)
     
-    # Create formatters
-    standard_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    # Set formatter for handler
-    main_file_handler.setFormatter(standard_formatter)
-    
-    # Add handler to logger
-    main_logger.addHandler(main_file_handler)
-    
-    # Add console handler if requested
-    if console_output:
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(numeric_level)
-        console_handler.setFormatter(standard_formatter)
-        main_logger.addHandler(console_handler)
-    
-    # Create specialized loggers for different components
-    loggers = {
-        "main": main_logger,
-        "settings": {
-            "log_level": log_level,
-            "include_vector_operations": include_vector_operations,
-            "include_llm_interactions": include_llm_interactions,
-            "include_reasoning_steps": include_reasoning_steps
-        },
-        "reasoning_trace": [],
-        "session_id": datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
-        "log_path": log_path
-    }
-    
-    # Create specialized loggers if needed
-    if include_vector_operations:
-        vector_logger = logging.getLogger("hyperlogica.vector")
-        vector_logger.setLevel(numeric_level)
-        vector_logger.handlers = []  # Clear any existing handlers
-        
-        vector_file_handler = logging.FileHandler(os.path.join(log_path, "vector_operations.log"))
-        vector_file_handler.setLevel(numeric_level)
-        vector_file_handler.setFormatter(standard_formatter)
-        
-        vector_logger.addHandler(vector_file_handler)
-        loggers["vector"] = vector_logger
-    
-    if include_llm_interactions:
-        llm_logger = logging.getLogger("hyperlogica.llm")
-        llm_logger.setLevel(numeric_level)
-        llm_logger.handlers = []  # Clear any existing handlers
-        
-        llm_file_handler = logging.FileHandler(os.path.join(log_path, "llm_interactions.log"))
-        llm_file_handler.setLevel(numeric_level)
-        llm_file_handler.setFormatter(standard_formatter)
-        
-        llm_logger.addHandler(llm_file_handler)
-        loggers["llm"] = llm_logger
-    
-    if include_reasoning_steps:
-        reasoning_logger = logging.getLogger("hyperlogica.reasoning")
-        reasoning_logger.setLevel(numeric_level)
-        reasoning_logger.handlers = []  # Clear any existing handlers
-        
-        reasoning_file_handler = logging.FileHandler(os.path.join(log_path, "reasoning_steps.log"))
-        reasoning_file_handler.setLevel(numeric_level)
-        reasoning_file_handler.setFormatter(standard_formatter)
-        
-        reasoning_logger.addHandler(reasoning_file_handler)
-        loggers["reasoning"] = reasoning_logger
-    
-    main_logger.info(f"Logging system initialized with level: {log_level}")
-    if include_vector_operations:
-        main_logger.info("Vector operations logging enabled")
-    if include_llm_interactions:
-        main_logger.info("LLM interaction logging enabled")
-    if include_reasoning_steps:
-        main_logger.info("Reasoning step logging enabled")
-    
-    return loggers
+    return logger
 
 def log_vector_operation(
     logger_config: Dict[str, Any],

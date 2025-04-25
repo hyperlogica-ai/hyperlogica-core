@@ -70,6 +70,14 @@ def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None
         log_path=log_path,
         log_level="info"
     )
+
+    # Add this after initializing the logger
+    if not isinstance(logger, logging.Logger):
+        print("Warning: Logger initialization failed. Using basic logging.")
+        logger = logging.getLogger("hyperlogica.main")
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        logger.addHandler(handler)
     
     try:
         # Step 1: Parse and validate configuration

@@ -1,38 +1,31 @@
-# llm_interface.py
+#!/usr/bin/env python3
 """
-LLM Interface for Hyperlogica System
+LLM Interface Module for Hyperlogica
 
-This module provides functions for interfacing with Large Language Models (LLMs)
-to convert between natural language and ACEP (AI Conceptual Exchange Protocol)
-representations. It handles prompt creation, API calls, response parsing, and
-utility functions for working with language.
-
-The module follows a functional programming approach with no classes, just pure
-functions designed to be composed together.
+This module provides functionality for interfacing with Language Models,
+specifically for converting between natural language and ACEP representations.
 """
 
-import json
 import os
+import json
 import time
 import logging
-from typing import Dict, Any, Optional, List, Tuple, Union
-import openai
+import hashlib
+import random
 import numpy as np
-import re
+from typing import Dict, List, Any, Tuple, Optional
+from datetime import datetime
+import openai
+import backoff  # Make sure this is installed: pip install backoff
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client if API key is available
-api_key = os.environ.get("OPENAI_API_KEY")
-if api_key:
-    client = openai.OpenAI(api_key=api_key)
-else:
-    logging.warning("OpenAI API key not found in environment variables. Some functions may not work.")
+# Check for API key
+if "OPENAI_API_KEY" not in os.environ:
+    logger.warning("OpenAI API key not found in environment variables.")
+
 
 def create_english_to_acep_prompt(text: str, context: Dict[str, Any]) -> str:
     """
@@ -44,46 +37,37 @@ def create_english_to_acep_prompt(text: str, context: Dict[str, Any]) -> str:
                         entity, and additional context useful for conversion.
         
     Returns:
-        str: A formatted prompt string ready to be sent to the LLM API for 
-             converting the input text to ACEP representation.
+        str: A formatted prompt string ready to be sent to the LLM API.
     """
     domain = context.get("domain", "general")
     entity_id = context.get("entity_id", "")
-    additional_context = context.get("additional_context", "")
+    certainty = context.get("certainty", 0.9)
     
     prompt = f"""
-    You are an expert in converting natural language statements into a structured format called ACEP (AI Conceptual Exchange Protocol), which uses vector representations for precise AI-to-AI communication.
-
-    Please convert the following text into ACEP format:
-
-    [TEXT: {text}]
-
-    If this is a rule or conditional statement:
-    1. Identify the antecedent (if condition) and consequent (then result)
-    2. Assign appropriate certainty values (0.0-1.0)
-    3. Identify any domain-specific attributes (temporal references, valence, etc.)
-
-    If this is a factual statement:
-    1. Identify the core concept being described
-    2. Extract any numeric values or assessments
-    3. Assign appropriate certainty values (0.0-1.0)
-    4. Identify any domain-specific attributes
-
-    Context information:
-    [DOMAIN: {domain}]
-    [ENTITY: {entity_id}]
-    [ADDITIONAL_CONTEXT: {additional_context}]
-
-    Produce a complete ACEP representation with:
-    - Concept identifier
-    - Relationship markers (if applicable)
-    - Attributes including certainty
-    - Explanation of how you derived this representation
-
-    Format your response as valid JSON.
+    Convert this text to a structured representation suitable for AI-to-AI communication:
+    
+    Text: {text}
+    
+    Context:
+    - Domain: {domain}
+    - Entity ID: {entity_id}
+    - Base certainty: {certainty}
+    
+    Extract:
+    - Is this a conditional statement (if-then)?
+    - What are the key concepts?
+    - What relationships exist between concepts?
+    - What is an appropriate level of certainty?
+    
+    Format the response as a JSON object with:
+    - identifier: A unique machine-readable ID for this concept
+    - type: Either "concept", "relation", or "rule"
+    - content: The primary content or meaning
+    - attributes: Additional metadata including certainty and domain-specific information
     """
     
-    return prompt.strip()
+    return prompt
+
 
 def create_acep_to_english_prompt(acep_representation: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
@@ -95,187 +79,121 @@ def create_acep_to_english_prompt(acep_representation: Dict[str, Any], context: 
                         entity, and additional context useful for conversion.
         
     Returns:
-        str: A formatted prompt string ready to be sent to the LLM API for
-             converting the ACEP representation to natural English text.
+        str: A formatted prompt string ready to be sent to the LLM API.
     """
     domain = context.get("domain", "general")
     entity_id = context.get("entity_id", "")
-    additional_context = context.get("additional_context", "")
-    
-    # Convert ACEP representation to JSON string for prompt
-    acep_json = json.dumps(acep_representation, indent=2)
     
     prompt = f"""
-    You are an expert in converting structured ACEP (AI Conceptual Exchange Protocol) representations into natural language that is precise, clear, and understandable to humans.
-
-    Please convert the following ACEP representation into natural language:
-
-    [ACEP_REPRESENTATION:
-    {acep_json}
-    ]
-
-    Context information:
-    [DOMAIN: {domain}]
-    [ENTITY: {entity_id}]
-    [ADDITIONAL_CONTEXT: {additional_context}]
-
-    For concepts, provide a clear statement of the concept.
-    For relationships, explain the relationship between concepts.
-    For reasoning chains, explain the logical flow from premises to conclusion.
-
-    Include:
-    1. The main statement in clear, concise language
-    2. The certainty level expressed in natural terms (e.g., "highly likely", "somewhat uncertain")
-    3. Any relevant context from the ACEP attributes
-
-    Avoid using technical terminology related to ACEP or vector representations.
-    Format your response as a well-structured paragraph suitable for a business report.
+    Convert this structured AI representation into natural language:
+    
+    Structured representation:
+    {json.dumps(acep_representation, indent=2)}
+    
+    Context:
+    - Domain: {domain}
+    - Entity ID: {entity_id}
+    
+    Generate clear, concise natural language that:
+    - Accurately conveys the same meaning as the structured representation
+    - Includes appropriate qualifiers to express certainty
+    - Uses domain-appropriate terminology
+    - Is suitable for human readers
+    
+    Format: A single paragraph of natural language text.
     """
     
-    return prompt.strip()
+    return prompt
 
-def create_reasoning_explanation_prompt(reasoning_trace: Dict[str, Any], context: Dict[str, Any]) -> str:
+
+@backoff.on_exception(backoff.expo, Exception, max_tries=3)
+def call_openai_api(prompt: str, model: str, options: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Create a prompt for explaining reasoning traces in natural language.
-    
-    Args:
-        reasoning_trace (dict): The reasoning trace to explain, containing steps, conclusions, etc.
-        context (dict): Contextual information including domain, entity, recommendation, and certainty.
-        
-    Returns:
-        str: A formatted prompt string ready to be sent to the LLM API for
-             generating a natural language explanation of the reasoning process.
-    """
-    domain = context.get("domain", "general")
-    entity_id = context.get("entity_id", "")
-    recommendation = context.get("recommendation", "")
-    certainty = context.get("certainty", 0.0)
-    
-    # Convert reasoning trace to JSON string for prompt
-    trace_json = json.dumps(reasoning_trace, indent=2)
-    
-    prompt = f"""
-    You are an expert in explaining AI reasoning processes in clear, understandable language for non-technical users.
-
-    Please explain the following reasoning chain:
-
-    [REASONING_TRACE:
-    {trace_json}
-    ]
-
-    Context information:
-    [DOMAIN: {domain}]
-    [ENTITY: {entity_id}]
-    [RECOMMENDATION: {recommendation}]
-    [CERTAINTY: {certainty}]
-
-    Your explanation should:
-    1. Start with the final recommendation and its confidence level
-    2. Outline the key factors that led to this conclusion
-    3. Explain any particularly important reasoning steps
-    4. Mention the balance of evidence (e.g., positive vs. negative signals)
-    5. Use domain-appropriate language and examples
-
-    Avoid technical jargon related to AI, vectors, or reasoning patterns.
-    Focus on making the explanation accessible and convincing to a business audience.
-    Format your response as a well-structured set of paragraphs with appropriate headings.
-    """
-    
-    return prompt.strip()
-
-def call_openai_api(prompt: str, model: str = "gpt-4", options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Call the OpenAI API with the given prompt.
+    Call the OpenAI API with the given prompt, with retry logic.
     
     Args:
         prompt (str): The prompt to send to the API.
         model (str): Name of the OpenAI model to use (e.g., "gpt-4").
-        options (dict, optional): Additional API options such as temperature, max_tokens, etc.
-        
+        options (dict): Additional API options such as temperature, max_tokens, etc.
+    
     Returns:
         dict: The API response containing the model's output.
         
     Raises:
-        openai.OpenAIError: If the API call fails due to authentication, rate limiting, or other errors.
-        TimeoutError: If the API call times out.
+        Exception: If the API call fails after retries.
     """
-    if not api_key:
-        raise ValueError("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+    try:
+        logger.info(f"Calling OpenAI API with model: {model}")
         
-    if options is None:
-        options = {}
-    
-    # Default options that can be overridden
-    default_options = {
-        "temperature": 0.0,
-        "max_tokens": 2000,
-        "top_p": 1.0,
-        "frequency_penalty": 0.0,
-        "presence_penalty": 0.0
-    }
-    
-    # Merge default options with provided options
-    api_options = {**default_options, **options}
-    
-    # Extract response_format if provided
-    response_format = api_options.pop("response_format", {"type": "text"})
-    
-    # Set up retry mechanism
-    max_retries = api_options.pop("max_retries", 3)
-    retry_delay = api_options.pop("retry_delay", 2)
-    
-    for attempt in range(max_retries):
-        try:
-            start_time = time.time()
-            
-            logging.info(f"Calling OpenAI API with model: {model}")
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format=response_format,
-                **api_options
-            )
-            
-            elapsed_time = time.time() - start_time
-            logging.info(f"API call completed in {elapsed_time:.2f} seconds")
-            
-            # Convert to dictionary for consistency
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": response.choices[0].message.content,
-                            "role": response.choices[0].message.role
-                        },
-                        "finish_reason": response.choices[0].finish_reason
-                    }
-                ],
-                "model": response.model,
-                "object": response.object,
-                "id": response.id,
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens
-                },
-                "created": response.created
-            }
-            
-        except (openai.RateLimitError, openai.APIConnectionError) as e:
-            if attempt < max_retries - 1:
-                wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                logging.warning(f"API error: {str(e)}. Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                logging.error(f"Failed after {max_retries} attempts: {str(e)}")
-                raise
-        except Exception as e:
-            logging.error(f"API call failed: {str(e)}")
-            raise
-            
-def parse_vector_representation(response: Dict[str, Any]) -> Dict[str, Any]:
+        # Just use the valid parameters that the API accepts
+        response = openai.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=options.get("temperature", 0.0),
+            max_tokens=options.get("max_tokens", 1000),
+            response_format={"type": "json_object"} if options.get("response_format") else None
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"API call failed: {str(e)}")
+        raise
+
+
+def call_openai_api_cached(prompt: str, model: str, 
+                          options: Dict[str, Any] = None, 
+                          cache_file: str = "api_cache.json") -> Dict[str, Any]:
     """
-    Parse the LLM response into structured data.
+    Call the OpenAI API with caching to reduce redundant API calls.
+    
+    Args:
+        prompt (str): The prompt to send to the API.
+        model (str): Name of the model to use.
+        options (dict, optional): Additional API options. Defaults to None.
+        cache_file (str, optional): File path for the cache. Defaults to "api_cache.json".
+    
+    Returns:
+        dict: The API response, either from cache or fresh API call.
+    """
+    # Create a unique hash for this prompt+model+options combination
+    options_str = json.dumps(options or {}, sort_keys=True)
+    cache_key = hashlib.md5(f"{prompt}|{model}|{options_str}".encode()).hexdigest()
+    
+    # Try to load cache
+    cache = {}
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                cache = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            logger.warning(f"Error loading cache file {cache_file}, using empty cache")
+    
+    # Check if we have this result cached
+    if cache_key in cache:
+        logger.info("Using cached API response")
+        return cache[cache_key]
+    
+    # If not in cache, make the actual API call
+    response = call_openai_api(prompt, model, options or {})
+    
+    # Save to cache
+    cache[cache_key] = response
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(os.path.abspath(cache_file)), exist_ok=True)
+        
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f)
+    except IOError as e:
+        logger.warning(f"Failed to write to cache file: {str(e)}")
+    
+    return response
+
+
+def parse_acep_representation(response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parse the LLM response into structured ACEP data.
     
     Args:
         response (dict): Raw response from the OpenAI API.
@@ -285,294 +203,258 @@ def parse_vector_representation(response: Dict[str, Any]) -> Dict[str, Any]:
         
     Raises:
         ValueError: If the response cannot be parsed into a valid ACEP representation.
-        json.JSONDecodeError: If the response content is not valid JSON.
     """
     try:
-        # Extract content from the response
-        content = response["choices"][0]["message"]["content"]
+        # Extract content from response
+        content = response.choices[0].message.content
         
-        # Some LLMs might wrap JSON in markdown code blocks, so we attempt to extract it
-        if "```json" in content and "```" in content:
-            start_idx = content.find("```json") + 7
-            end_idx = content.rfind("```")
-            content = content[start_idx:end_idx].strip()
-        elif "```" in content:
-            # Handle code blocks without language specification
-            start_idx = content.find("```") + 3
-            end_idx = content.rfind("```")
-            content = content[start_idx:end_idx].strip()
-            
-        # Parse the JSON content
-        parsed_data = json.loads(content)
+        # Parse JSON from content
+        acep_data = json.loads(content)
         
-        # Validate required fields for ACEP representation
+        # Validate minimum required fields
         required_fields = ["identifier", "type"]
-        if not all(field in parsed_data for field in required_fields):
-            missing_fields = [field for field in required_fields if field not in parsed_data]
-            raise ValueError(f"Missing required fields in ACEP representation: {missing_fields}")
-            
-        return parsed_data
+        for field in required_fields:
+            if field not in acep_data:
+                raise ValueError(f"Missing required field '{field}' in ACEP representation")
+        
+        # Ensure attributes dict exists
+        if "attributes" not in acep_data:
+            acep_data["attributes"] = {}
+        
+        # Ensure certainty exists in attributes
+        if "certainty" not in acep_data["attributes"]:
+            acep_data["attributes"]["certainty"] = 0.9  # Default high certainty
+        
+        return acep_data
         
     except json.JSONDecodeError as e:
-        logging.error(f"Failed to parse JSON from response: {e}")
-        logging.debug(f"Response content: {response['choices'][0]['message']['content']}")
-        raise ValueError(f"Response is not valid JSON: {str(e)}")
-    except KeyError as e:
-        logging.error(f"Missing expected key in response: {e}")
+        logger.error(f"Failed to parse JSON from LLM response: {str(e)}")
+        raise ValueError(f"Invalid JSON in LLM response: {str(e)}")
+    
+    except (KeyError, IndexError, AttributeError) as e:
+        logger.error(f"Invalid response structure: {str(e)}")
         raise ValueError(f"Invalid response structure: {str(e)}")
-    except Exception as e:
-        logging.error(f"Error parsing vector representation: {e}")
-        raise
 
-def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Convert English text to ACEP representation using LLM.
     
     Args:
         text (str): English text to convert.
         context (dict): Contextual information about the domain and entity.
-        llm_options (dict, optional): Options for the LLM API call, including model, temperature, etc.
+        llm_options (dict, optional): Options for the LLM API call, 
+                                     including model, temperature, etc.
         
     Returns:
         dict: Structured ACEP representation of the input text.
         
     Raises:
         ValueError: If the text cannot be converted to a valid ACEP representation.
-        openai.OpenAIError: If the API call fails.
     """
-    if llm_options is None:
-        llm_options = {}
+    logger.info(f"Converting to ACEP: {text[:50]}...")
     
-    # Set default model if not provided
+    # Set default LLM options if not provided
+    if llm_options is None:
+        llm_options = {
+            "temperature": 0.0,
+            "max_tokens": 1000
+        }
+    
     model = llm_options.get("model", "gpt-4")
     
-    # Add response format for JSON
-    llm_options["response_format"] = {"type": "json_object"}
-    
-    # Create the prompt
+    # Create prompt for the LLM
     prompt = create_english_to_acep_prompt(text, context)
     
-    # Make the API call
-    logging.info(f"Converting to ACEP: {text[:50]}{'...' if len(text) > 50 else ''}")
+    # Call the API
     response = call_openai_api(prompt, model, llm_options)
     
-    # Parse the response
-    try:
-        acep_representation = parse_vector_representation(response)
-        
-        # Add metadata about the source text
-        if "metadata" not in acep_representation:
-            acep_representation["metadata"] = {}
-        acep_representation["metadata"]["source_text"] = text
-        acep_representation["metadata"]["context"] = context
-        
-        logging.info(f"Successfully converted to ACEP with identifier: {acep_representation.get('identifier', 'unknown')}")
-        return acep_representation
-        
-    except Exception as e:
-        logging.error(f"Failed to convert text to ACEP: {str(e)}")
-        raise ValueError(f"Failed to convert text to ACEP representation: {str(e)}")
+    # Parse the response into ACEP representation
+    acep_representation = parse_acep_representation(response)
+    
+    # Set some attributes if not already present
+    if "entity_id" not in acep_representation["attributes"] and "entity_id" in context:
+        acep_representation["attributes"]["entity_id"] = context["entity_id"]
+    
+    if "domain" not in acep_representation["attributes"] and "domain" in context:
+        acep_representation["attributes"]["domain"] = context["domain"]
+    
+    return acep_representation
 
-def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[str, Any], llm_options: Optional[Dict[str, Any]] = None) -> str:
+
+def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> str:
     """
     Convert ACEP representation to English text using LLM.
     
     Args:
         acep_representation (dict): Structured ACEP representation to convert.
         context (dict): Contextual information about the domain and entity.
-        llm_options (dict, optional): Options for the LLM API call, including model, temperature, etc.
+        llm_options (dict, optional): Options for the LLM API call, 
+                                     including model, temperature, etc.
         
     Returns:
         str: Natural language English text representing the ACEP content.
         
     Raises:
         ValueError: If the ACEP representation is invalid or cannot be converted.
-        openai.OpenAIError: If the API call fails.
     """
-    if llm_options is None:
-        llm_options = {}
+    logger.info(f"Converting from ACEP to English: {acep_representation['identifier']}")
     
-    # Set default model if not provided
+    # Set default LLM options if not provided
+    if llm_options is None:
+        llm_options = {
+            "temperature": 0.3,  # Slightly higher temperature for more natural language
+            "max_tokens": 1000
+        }
+    
     model = llm_options.get("model", "gpt-4")
     
-    # Create the prompt
+    # Create prompt for the LLM
     prompt = create_acep_to_english_prompt(acep_representation, context)
     
-    # Make the API call
-    logging.info(f"Converting ACEP to English: {acep_representation.get('identifier', 'unknown')}")
+    # Call the API
     response = call_openai_api(prompt, model, llm_options)
     
-    # Extract the English text from the response
-    english_text = response["choices"][0]["message"]["content"]
+    # Extract the text
+    english_text = response.choices[0].message.content
     
-    logging.info(f"Successfully converted ACEP to English text")
     return english_text
 
-def generate_explanation(reasoning_trace: Dict[str, Any], context: Dict[str, Any], llm_options: Optional[Dict[str, Any]] = None) -> str:
+
+def generate_explanation(reasoning_trace: Dict[str, Any], context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> str:
     """
-    Generate a natural language explanation of a reasoning trace.
+    Generate a natural language explanation from a reasoning trace.
     
     Args:
-        reasoning_trace (dict): The reasoning trace containing steps, conclusions, etc.
-        context (dict): Context information including domain, entity, recommendation, etc.
-        llm_options (dict, optional): Options for the LLM API call, including model, temperature, etc.
+        reasoning_trace (dict): Reasoning trace data structure.
+        context (dict): Contextual information including domain and recommendation.
+        llm_options (dict, optional): Options for the LLM API call.
         
     Returns:
         str: Natural language explanation of the reasoning process.
-        
-    Raises:
-        ValueError: If the reasoning trace is invalid or cannot be explained.
-        openai.OpenAIError: If the API call fails.
     """
-    if llm_options is None:
-        llm_options = {}
+    logger.info("Generating explanation from reasoning trace")
     
-    # Set default model if not provided
+    # Set default LLM options if not provided
+    if llm_options is None:
+        llm_options = {
+            "temperature": 0.4,  # Higher temperature for more creative explanations
+            "max_tokens": 1500
+        }
+    
     model = llm_options.get("model", "gpt-4")
     
-    # Create the prompt
-    prompt = create_reasoning_explanation_prompt(reasoning_trace, context)
+    # Create a prompt for explanation generation
+    domain = context.get("domain", "general")
+    entity_id = context.get("entity_id", "")
+    recommendation = context.get("recommendation", "")
+    certainty = context.get("certainty", 0.5)
     
-    # Make the API call
-    logging.info(f"Generating explanation for reasoning trace with {len(reasoning_trace.get('steps', []))} steps")
-    response = call_openai_api(prompt, model, llm_options)
+    prompt = f"""
+    Explain the following reasoning process in clear, natural language:
     
-    # Extract the explanation from the response
-    explanation = response["choices"][0]["message"]["content"]
+    Reasoning trace:
+    {json.dumps(reasoning_trace, indent=2)}
     
-    logging.info(f"Successfully generated explanation")
-    return explanation
+    Context:
+    - Domain: {domain}
+    - Entity: {entity_id}
+    - Final recommendation: {recommendation}
+    - Confidence level: {certainty:.2%}
+    
+    Your explanation should:
+    1. Start with the final recommendation and its confidence level
+    2. Explain the key factors that led to this conclusion
+    3. Describe the logical steps in the reasoning process
+    4. Use domain-appropriate terminology
+    5. Be understandable to a non-technical audience
+    
+    Format the explanation as a well-structured paragraph.
+    """
+    
+    # We don't need to parse the response as JSON here, just return the text
+    api_options = llm_options.copy()
+    if 'response_format' in api_options:
+        del api_options['response_format']  # Remove JSON response format
+    
+    try:
+        response = call_openai_api(prompt, model, api_options)
+        explanation = response.choices[0].message.content
+        return explanation
+    except Exception as e:
+        logger.error(f"Failed to generate explanation: {str(e)}")
+        return f"Unable to generate explanation due to an error: {str(e)}"
 
-def is_conditional_statement(text: str) -> bool:
-    """
-    Simple heuristic to determine if a text contains a conditional statement.
-    
-    Args:
-        text (str): The text to analyze.
-        
-    Returns:
-        bool: True if the text appears to contain a conditional statement, False otherwise.
-    """
-    lower_text = text.lower()
-    
-    # Check for common conditional constructs
-    if_then_patterns = [
-        "if" in lower_text and "then" in lower_text,
-        "when" in lower_text and "then" in lower_text,
-        "whenever" in lower_text and "then" in lower_text,
-        "in case" in lower_text and "then" in lower_text
-    ]
-    
-    return any(if_then_patterns)
-
-def extract_certainty_language(text: str) -> float:
-    """
-    Extract a numerical certainty value from natural language expressions.
-    
-    Args:
-        text (str): Text containing certainty expressions.
-        
-    Returns:
-        float: Estimated certainty value between 0.0 and 1.0.
-    """
-    lower_text = text.lower()
-    
-    # Definite certainty expressions
-    if any(phrase in lower_text for phrase in ["certainly", "definitely", "always", "absolutely", "guaranteed"]):
-        return 0.95
-    
-    # High certainty expressions
-    if any(phrase in lower_text for phrase in ["very likely", "highly probable", "strong chance", "usually"]):
-        return 0.8
-    
-    # Moderate certainty expressions
-    if any(phrase in lower_text for phrase in ["likely", "probably", "often", "should"]):
-        return 0.7
-    
-    # Uncertain expressions
-    if any(phrase in lower_text for phrase in ["possibly", "might", "may", "can", "sometimes"]):
-        return 0.5
-    
-    # Low certainty expressions
-    if any(phrase in lower_text for phrase in ["unlikely", "rarely", "seldom", "doubtful"]):
-        return 0.3
-    
-    # Very low certainty expressions
-    if any(phrase in lower_text for phrase in ["very unlikely", "highly doubtful", "almost never"]):
-        return 0.1
-    
-    # Default moderate certainty if no expressions found
-    return 0.7
 
 def create_embedding(text: str, model: str = "text-embedding-ada-002") -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    Create a vector embedding for a text using OpenAI's embedding API.
+    Create an embedding vector for the given text using OpenAI's embedding API.
     
     Args:
-        text (str): Text to convert to a vector embedding.
-        model (str, optional): Name of the embedding model to use. Defaults to "text-embedding-ada-002".
-        
-    Returns:
-        Tuple[np.ndarray, Dict[str, Any]]: A tuple containing:
-            - The embedding vector as a numpy array
-            - Metadata about the embedding including model, dimensions, and usage
-            
-    Raises:
-        ValueError: If the API key is not set or the embedding creation fails.
-        openai.OpenAIError: If the API call fails.
-    """
-    if not api_key:
-        raise ValueError("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+        text (str): Text to embed.
+        model (str, optional): Embedding model to use. Defaults to "text-embedding-ada-002".
     
+    Returns:
+        tuple: (embedding_vector, metadata)
+            - embedding_vector (np.ndarray): The embedding vector.
+            - metadata (dict): Information about the embedding (dimensions, model).
+    """
     try:
-        logging.info(f"Creating embedding for text: {text[:50]}{'...' if len(text) > 50 else ''}")
+        logger.info(f"Creating embedding for text: {text[:30]}...")
         
-        start_time = time.time()
-        response = client.embeddings.create(
+        # Call the embedding API - different endpoint from chat completions
+        response = openai.embeddings.create(
             model=model,
             input=text
         )
-        elapsed_time = time.time() - start_time
         
         # Extract the embedding
-        embedding = np.array(response.data[0].embedding)
+        embedding = response.data[0].embedding
         
+        # Convert to numpy array
+        embedding_vector = np.array(embedding)
+        
+        # Create metadata
         metadata = {
-            "model": response.model,
             "dimensions": len(embedding),
-            "usage": {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "total_tokens": response.usage.total_tokens
-            },
-            "elapsed_time": elapsed_time
+            "model": model,
+            "text": text[:100] + "..." if len(text) > 100 else text
         }
         
-        logging.info(f"Created {metadata['dimensions']}-dimensional embedding in {elapsed_time:.2f} seconds")
-        
-        return embedding, metadata
-        
+        return embedding_vector, metadata
+    
     except Exception as e:
-        logging.error(f"Failed to create embedding: {str(e)}")
-        raise ValueError(f"Failed to create embedding: {str(e)}")
+        logger.error(f"Failed to create embedding: {str(e)}")
+        logger.warning("Falling back to deterministic vector generation")
+        
+        # Fallback to deterministic vector generation
+        vector = generate_deterministic_vector(text, 1536)  # 1536 is the dimension of ada embeddings
+        
+        metadata = {
+            "dimensions": 1536,
+            "model": "fallback-deterministic",
+            "text": text[:100] + "..." if len(text) > 100 else text
+        }
+        
+        return vector, metadata
 
-def generate_deterministic_vector(text: str, dimension: int, seed: Optional[int] = None) -> np.ndarray:
+
+def generate_deterministic_vector(text: str, dimension: int = 10000) -> np.ndarray:
     """
-    Generate a deterministic vector from text for when API embeddings aren't available.
+    Generate a deterministic vector from text as a fallback when API is unavailable.
     
     Args:
-        text (str): Text to convert to a vector.
-        dimension (int): Dimension of the vector to generate.
-        seed (int, optional): Random seed for reproducibility. If None, will use hash of text.
-        
+        text (str): Input text to convert to a vector.
+        dimension (int, optional): Dimensionality of the vector. Defaults to 10000.
+    
     Returns:
-        np.ndarray: A normalized vector of specified dimension.
+        np.ndarray: A unit vector derived from the text in a deterministic way.
     """
-    # If no seed provided, create one from the text
-    if seed is None:
-        seed = hash(text) % (2**32)
+    # Create a hash of the text to use as a seed
+    text_hash = int(hashlib.md5(text.encode()).hexdigest(), 16) % (2**32)
     
     # Set the random seed for reproducibility
-    np.random.seed(seed)
+    np.random.seed(text_hash)
     
     # Generate a random vector
     vector = np.random.normal(0, 1, dimension)
@@ -582,312 +464,216 @@ def generate_deterministic_vector(text: str, dimension: int, seed: Optional[int]
     
     return vector
 
-def cache_api_response(prompt: str, response: Dict[str, Any], cache_file: str = "api_cache.json") -> None:
-    """
-    Cache an API response to a file to avoid redundant API calls.
-    
-    Args:
-        prompt (str): The prompt that was sent to the API.
-        response (Dict[str, Any]): The response received from the API.
-        cache_file (str, optional): Path to the cache file. Defaults to "api_cache.json".
-    """
-    try:
-        # Generate a key for the cache using a hash of the prompt
-        cache_key = str(hash(prompt))
-        
-        # Load existing cache if it exists
-        cache = {}
-        if os.path.exists(cache_file):
-            with open(cache_file, 'r') as f:
-                cache = json.load(f)
-        
-        # Add the new response to the cache
-        cache[cache_key] = {
-            "prompt": prompt,
-            "response": response,
-            "timestamp": time.time()
-        }
-        
-        # Save the updated cache
-        with open(cache_file, 'w') as f:
-            json.dump(cache, f)
-            
-        logging.info(f"Cached API response for prompt hash {cache_key}")
-        
-    except Exception as e:
-        logging.warning(f"Failed to cache API response: {str(e)}")
-
-def get_cached_response(prompt: str, max_age: Optional[float] = None, cache_file: str = "api_cache.json") -> Optional[Dict[str, Any]]:
-    """
-    Retrieve a cached API response if available and not expired.
-    
-    Args:
-        prompt (str): The prompt to look up in the cache.
-        max_age (float, optional): Maximum age of cached response in seconds. 
-                                 If None, no expiration. Defaults to None.
-        cache_file (str, optional): Path to the cache file. Defaults to "api_cache.json".
-        
-    Returns:
-        Optional[Dict[str, Any]]: The cached response if found and not expired, None otherwise.
-    """
-    try:
-        # Generate a key for the cache lookup
-        cache_key = str(hash(prompt))
-        
-        # Check if cache file exists
-        if not os.path.exists(cache_file):
-            return None
-        
-        # Load the cache
-        with open(cache_file, 'r') as f:
-            cache = json.load(f)
-        
-        # Check if the key exists in the cache
-        if cache_key not in cache:
-            return None
-        
-        # Check if the cached response is expired
-        cached_entry = cache[cache_key]
-        if max_age is not None:
-            age = time.time() - cached_entry["timestamp"]
-            if age > max_age:
-                logging.info(f"Cached response expired (age: {age:.2f}s, max_age: {max_age:.2f}s)")
-                return None
-        
-        logging.info(f"Retrieved cached API response for prompt hash {cache_key}")
-        return cached_entry["response"]
-        
-    except Exception as e:
-        logging.warning(f"Failed to retrieve cached response: {str(e)}")
-        return None
-
-def call_openai_api_cached(prompt: str, model: str = "gpt-4", options: Optional[Dict[str, Any]] = None, 
-                         max_age: Optional[float] = None, cache_file: str = "api_cache.json") -> Dict[str, Any]:
-    """
-    Call the OpenAI API with caching to avoid redundant API calls.
-    
-    Args:
-        prompt (str): The prompt to send to the API.
-        model (str, optional): Name of the OpenAI model to use. Defaults to "gpt-4".
-        options (Dict[str, Any], optional): Additional API options. Defaults to None.
-        max_age (float, optional): Maximum age of cached response in seconds.
-                                 If None, no expiration. Defaults to None.
-        cache_file (str, optional): Path to the cache file. Defaults to "api_cache.json".
-        
-    Returns:
-        Dict[str, Any]: The API response, either from cache or from a new API call.
-        
-    Raises:
-        The same exceptions as call_openai_api.
-    """
-    # Check if response is in cache
-    cached_response = get_cached_response(prompt, max_age, cache_file)
-    if cached_response is not None:
-        return cached_response
-    
-    # If not in cache or expired, make a new API call
-    response = call_openai_api(prompt, model, options)
-    
-    # Cache the response
-    cache_api_response(prompt, response, cache_file)
-    
-    return response
 
 def create_normalized_identifier(text: str, max_length: int = 50) -> str:
     """
-    Create a normalized identifier from text, suitable for use as an ACEP identifier.
+    Create a normalized identifier from text.
     
     Args:
-        text (str): Text to convert to an identifier.
+        text (str): Text to normalize.
         max_length (int, optional): Maximum length of the identifier. Defaults to 50.
-        
+    
     Returns:
-        str: A normalized identifier containing only lowercase letters, numbers, and underscores.
+        str: Normalized identifier suitable for use as a key.
     """
     # Convert to lowercase
     identifier = text.lower()
     
-    # Remove punctuation and special characters
+    # Replace non-alphanumeric characters with underscores
+    import re
     identifier = re.sub(r'[^\w\s]', '', identifier)
     
-    # Replace spaces with underscores
+    # Replace whitespace with underscores
     identifier = re.sub(r'\s+', '_', identifier)
-    
-    # Remove any consecutive underscores
-    identifier = re.sub(r'_+', '_', identifier)
     
     # Truncate if too long
     if len(identifier) > max_length:
         identifier = identifier[:max_length]
     
-    # Remove trailing underscores
-    identifier = identifier.rstrip('_')
-    
     return identifier
+
+
+def extract_certainty_language(text: str) -> float:
+    """
+    Extract the certainty level from natural language expressions.
+    
+    Args:
+        text (str): Text containing certainty expressions.
+    
+    Returns:
+        float: Estimated certainty value between 0 and 1.
+    """
+    text = text.lower()
+    
+    # Define certainty mappings
+    high_certainty = [
+        "certainly", "definitely", "absolutely", "undoubtedly", "will",
+        "is certain", "is guaranteed", "always", "undeniable"
+    ]
+    
+    medium_high_certainty = [
+        "very likely", "highly probable", "strongly suggest", "most likely",
+        "almost certainly", "highly confident", "will probably"
+    ]
+    
+    medium_certainty = [
+        "likely", "probably", "suggests", "indicates", "tends to",
+        "appears to", "seem", "often", "usually"
+    ]
+    
+    medium_low_certainty = [
+        "may", "might", "possibly", "perhaps", "could",
+        "sometimes", "somewhat", "can", "potential"
+    ]
+    
+    low_certainty = [
+        "unlikely", "doubtful", "rarely", "seldom", "slight chance",
+        "questionable", "improbable", "not likely"
+    ]
+    
+    very_low_certainty = [
+        "very unlikely", "highly doubtful", "almost certainly not",
+        "very improbable", "virtually impossible", "remote chance"
+    ]
+    
+    # Check for negations
+    negations = ["not", "never", "no", "don't", "doesn't", "isn't", "aren't", "won't"]
+    has_negation = any(neg in text.split() for neg in negations)
+    
+    # Determine certainty value
+    if any(term in text for term in high_certainty) and not has_negation:
+        return 0.95
+    elif any(term in text for term in medium_high_certainty) and not has_negation:
+        return 0.85
+    elif any(term in text for term in medium_certainty) and not has_negation:
+        return 0.7
+    elif any(term in text for term in medium_low_certainty) and not has_negation:
+        return 0.5
+    elif any(term in text for term in low_certainty) and not has_negation:
+        return 0.3
+    elif any(term in text for term in very_low_certainty) and not has_negation:
+        return 0.1
+    elif any(term in text for term in high_certainty) and has_negation:
+        return 0.05
+    elif any(term in text for term in medium_high_certainty) and has_negation:
+        return 0.15
+    elif any(term in text for term in medium_certainty) and has_negation:
+        return 0.3
+    
+    # Default value for text with no clear certainty indicators
+    return 0.5
+
+
+def is_conditional_statement(text: str) -> bool:
+    """
+    Detect if a statement is conditional (if-then structure).
+    
+    Args:
+        text (str): Text to analyze.
+    
+    Returns:
+        bool: True if the statement is conditional, False otherwise.
+    """
+    text = text.lower()
+    
+    # Common conditional indicators
+    conditional_indicators = [
+        "if", "when", "whenever", "unless", "provided that", "assuming that",
+        "in case", "should", "as long as", "only if", "given that"
+    ]
+    
+    # Common consequent indicators
+    consequent_indicators = [
+        "then", "will", "would", "should", "may", "might", "can", "could"
+    ]
+    
+    # Check for conditional structure
+    has_condition = any(indicator in text.split() for indicator in conditional_indicators)
+    has_consequent = any(indicator in text.split() for indicator in consequent_indicators)
+    
+    return has_condition and has_consequent
+
 
 def extract_numeric_value(text: str) -> Optional[float]:
     """
-    Extract a numeric value from text.
+    Extract a numeric value from text if present.
     
     Args:
-        text (str): Text containing a numeric value.
-        
+        text (str): Text to analyze.
+    
     Returns:
-        Optional[float]: The extracted numeric value, or None if no value is found.
+        float or None: Extracted numeric value, or None if no value found.
     """
-    # Look for percentages first
+    import re
+    
+    # Look for percentage values first
     percentage_match = re.search(r'(\d+(?:\.\d+)?)%', text)
     if percentage_match:
         return float(percentage_match.group(1)) / 100
     
-    # Look for general numbers
-    number_match = re.search(r'(\d+(?:\.\d+)?)', text)
-    if number_match:
-        return float(number_match.group(1))
+    # Look for regular numeric values
+    numeric_match = re.search(r'(\d+(?:\.\d+)?)', text)
+    if numeric_match:
+        return float(numeric_match.group(1))
     
     return None
+
 
 def extract_temporal_reference(text: str) -> Optional[str]:
     """
     Extract temporal references from text.
     
     Args:
-        text (str): Text containing temporal references.
-        
+        text (str): Text to analyze.
+    
     Returns:
-        Optional[str]: Extracted temporal reference, or None if no reference is found.
+        str or None: Extracted temporal reference, or None if not found.
     """
     text = text.lower()
     
-    # Check for specific time periods
-    time_periods = [
-        "today", "tomorrow", "yesterday", 
-        "next week", "last week", "this week",
-        "next month", "last month", "this month",
-        "next year", "last year", "this year",
-        "current quarter", "next quarter", "previous quarter",
-        "short term", "long term", "medium term"
-    ]
+    # Common time references
+    time_references = {
+        "immediate": ["today", "now", "immediately", "current", "presently"],
+        "short_term": ["tomorrow", "this week", "next week", "soon", "shortly", "days"],
+        "medium_term": ["this month", "next month", "quarterly", "this quarter", "months"],
+        "long_term": ["this year", "next year", "annual", "long-term", "years"],
+        "past": ["yesterday", "last week", "last month", "last year", "previously"]
+    }
     
-    for period in time_periods:
-        if period in text:
-            return period
-    
-    # Check for dates in format YYYY-MM-DD
+    # Check for ISO dates (YYYY-MM-DD)
+    import re
     date_match = re.search(r'\d{4}-\d{2}-\d{2}', text)
     if date_match:
         return date_match.group(0)
     
-    # Check for relative time expressions
-    if re.search(r'in \d+ days?', text):
-        return re.search(r'in \d+ days?', text).group(0)
-    if re.search(r'in \d+ weeks?', text):
-        return re.search(r'in \d+ weeks?', text).group(0)
-    if re.search(r'in \d+ months?', text):
-        return re.search(r'in \d+ months?', text).group(0)
-    if re.search(r'in \d+ years?', text):
-        return re.search(r'in \d+ years?', text).group(0)
+    # Check for time references
+    for period, references in time_references.items():
+        if any(ref in text for ref in references):
+            return period
     
     return None
 
-# Example usage function
-def example_usage():
-    """
-    Demonstrate how to use the LLM interface with a simple example.
-    """
-    # Set up OpenAI API key
-    if "OPENAI_API_KEY" not in os.environ:
-        print("Please set the OPENAI_API_KEY environment variable.")
-        return
-    
-    # Example text to convert
-    text = "If a company's P/E ratio is below the industry average, then the stock might be undervalued."
-
-    # Set up context for the conversion
-    context = {
-        "domain": "finance",
-        "entity_id": "example_stock",
-        "additional_context": "Stock valuation analysis"
-    }
-    
-    try:
-        print(f"Input text: {text}")
-        
-        # Convert the text to ACEP representation
-        print("\nConverting text to ACEP representation...")
-        acep_representation = convert_english_to_acep(text, context)
-        print("\nACEP representation:")
-        print(json.dumps(acep_representation, indent=2))
-        
-        # Convert the ACEP representation back to English
-        print("\nConverting ACEP representation back to English...")
-        english_text = convert_acep_to_english(acep_representation, context)
-        print("\nEnglish representation:")
-        print(english_text)
-        
-        # Create a simple reasoning trace for explanation
-        reasoning_trace = {
-            "session_id": "example_session",
-            "timestamp": "2023-04-15T10:30:00Z",
-            "steps": [
-                {
-                    "step_id": 1,
-                    "pattern": "modus_ponens",
-                    "premises": [
-                        acep_representation["identifier"],
-                        "example_stock_low_pe_ratio"
-                    ],
-                    "conclusion": "example_stock_undervalued",
-                    "certainty": 0.8
-                }
-            ],
-            "final_conclusions": [
-                {
-                    "identifier": "example_stock_undervalued",
-                    "text": "The example stock is potentially undervalued",
-                    "certainty": 0.8
-                }
-            ]
-        }
-        
-        # Generate an explanation of the reasoning
-        print("\nGenerating explanation from reasoning trace...")
-        explanation_context = {
-            "domain": "finance",
-            "entity_id": "example_stock",
-            "recommendation": "CONSIDER_BUY",
-            "certainty": 0.8
-        }
-        explanation = generate_explanation(reasoning_trace, explanation_context)
-        print("\nGenerated explanation:")
-        print(explanation)
-        
-        # Demonstrate utility functions
-        print("\nDemonstrating utility functions:")
-        identifier = create_normalized_identifier(text)
-        print(f"Normalized identifier: {identifier}")
-        
-        is_conditional = is_conditional_statement(text)
-        print(f"Is conditional statement: {is_conditional}")
-        
-        # Create a vector embedding if possible
-        try:
-            print("\nCreating vector embedding...")
-            embedding, metadata = create_embedding(text)
-            print(f"Created embedding with {metadata['dimensions']} dimensions")
-            print(f"Embedding shape: {embedding.shape}")
-            print(f"First 5 values: {embedding[:5]}")
-        except Exception as e:
-            print(f"Could not create embedding: {str(e)}")
-            print("Using deterministic vector as fallback...")
-            vector = generate_deterministic_vector(text, 1536)
-            print(f"Created deterministic vector with shape {vector.shape}")
-            print(f"First 5 values: {vector[:5]}")
-            
-    except Exception as e:
-        print(f"Error in example: {str(e)}")
-        import traceback
-        traceback.print_exc()
 
 if __name__ == "__main__":
-    example_usage()
+    # Simple test function to verify functionality
+    def test_api_call():
+        if "OPENAI_API_KEY" not in os.environ:
+            print("OpenAI API key not found in environment variables. Skipping test.")
+            return
+        
+        print("Testing OpenAI API call...")
+        
+        try:
+            response = call_openai_api(
+                prompt="What are the advantages of vector-based AI communication?",
+                model="gpt-3.5-turbo",
+                options={"temperature": 0.7, "max_tokens": 100}
+            )
+            
+            print("API call successful!")
+            print(f"Response: {response.choices[0].message.content}")
+            
+        except Exception as e:
+            print(f"API test failed: {str(e)}")
+    
+    test_api_call()

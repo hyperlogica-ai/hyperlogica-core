@@ -2,7 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env filepi
 load_dotenv()
 
 # Verify the API key is loaded
