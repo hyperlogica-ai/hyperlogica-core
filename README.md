@@ -17,9 +17,9 @@
 
 ## 📖 Introduction
 
-Hyperlogica is a sophisticated AI communication system that implements the AI Conceptual Exchange Protocol (ACEP), a specialized language designed for efficient and precise communication between AI systems. By leveraging hyperdimensional computing principles, Hyperlogica overcomes the limitations of natural language for machine-to-machine communication, offering significant improvements in efficiency, precision, and reasoning capabilities.
+Hyperlogica is an AI reasoning system based on AI Conceptual Exchange Protocol (ACEP), a specialized language designed for efficient and precise communication between AI systems. By leveraging hyperdimensional computing principles (10,000 dimensional vectors), Hyperlogica offers significant improvements in efficiency, precision, and reasoning capabilities.
 
-Unlike natural language, which is inherently ambiguous and inefficient for AI communication, Hyperlogica uses high-dimensional vector representations with explicit relationship markers, certainty qualifiers, and a state reference system that dramatically reduces token requirements and computational overhead.
+Hyperlogica uses high-dimensional vector representations with explicit relationship markers, certainty qualifiers, and a state reference system that dramatically reduces token requirements and computational overhead.
 
 ---
 
