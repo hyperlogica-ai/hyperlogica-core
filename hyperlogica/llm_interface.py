@@ -801,4 +801,93 @@ def example_usage():
         return
     
     # Example text to convert
-    text = "If a company's P/E ratio is below the industry average
+    text = "If a company's P/E ratio is below the industry average, then the stock might be undervalued."
+
+    # Set up context for the conversion
+    context = {
+        "domain": "finance",
+        "entity_id": "example_stock",
+        "additional_context": "Stock valuation analysis"
+    }
+    
+    try:
+        print(f"Input text: {text}")
+        
+        # Convert the text to ACEP representation
+        print("\nConverting text to ACEP representation...")
+        acep_representation = convert_english_to_acep(text, context)
+        print("\nACEP representation:")
+        print(json.dumps(acep_representation, indent=2))
+        
+        # Convert the ACEP representation back to English
+        print("\nConverting ACEP representation back to English...")
+        english_text = convert_acep_to_english(acep_representation, context)
+        print("\nEnglish representation:")
+        print(english_text)
+        
+        # Create a simple reasoning trace for explanation
+        reasoning_trace = {
+            "session_id": "example_session",
+            "timestamp": "2023-04-15T10:30:00Z",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "pattern": "modus_ponens",
+                    "premises": [
+                        acep_representation["identifier"],
+                        "example_stock_low_pe_ratio"
+                    ],
+                    "conclusion": "example_stock_undervalued",
+                    "certainty": 0.8
+                }
+            ],
+            "final_conclusions": [
+                {
+                    "identifier": "example_stock_undervalued",
+                    "text": "The example stock is potentially undervalued",
+                    "certainty": 0.8
+                }
+            ]
+        }
+        
+        # Generate an explanation of the reasoning
+        print("\nGenerating explanation from reasoning trace...")
+        explanation_context = {
+            "domain": "finance",
+            "entity_id": "example_stock",
+            "recommendation": "CONSIDER_BUY",
+            "certainty": 0.8
+        }
+        explanation = generate_explanation(reasoning_trace, explanation_context)
+        print("\nGenerated explanation:")
+        print(explanation)
+        
+        # Demonstrate utility functions
+        print("\nDemonstrating utility functions:")
+        identifier = create_normalized_identifier(text)
+        print(f"Normalized identifier: {identifier}")
+        
+        is_conditional = is_conditional_statement(text)
+        print(f"Is conditional statement: {is_conditional}")
+        
+        # Create a vector embedding if possible
+        try:
+            print("\nCreating vector embedding...")
+            embedding, metadata = create_embedding(text)
+            print(f"Created embedding with {metadata['dimensions']} dimensions")
+            print(f"Embedding shape: {embedding.shape}")
+            print(f"First 5 values: {embedding[:5]}")
+        except Exception as e:
+            print(f"Could not create embedding: {str(e)}")
+            print("Using deterministic vector as fallback...")
+            vector = generate_deterministic_vector(text, 1536)
+            print(f"Created deterministic vector with shape {vector.shape}")
+            print(f"First 5 values: {vector[:5]}")
+            
+    except Exception as e:
+        print(f"Error in example: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    example_usage()

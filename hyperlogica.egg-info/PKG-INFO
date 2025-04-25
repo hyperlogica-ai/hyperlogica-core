@@ -1,0 +1,32 @@
+Metadata-Version: 2.4
+Name: hyperlogica
+Version: 0.1.0
+Summary: Vector-based reasoning system using hyperdimensional computing
+Author: Chroma Capital Management
+Author-email: systems@chromacapital.com
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Requires-Python: >=3.8
+License-File: LICENSE.txt
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: faiss-cpu>=1.7.0
+Requires-Dist: openai>=0.27.0
+Requires-Dist: python-dotenv>=0.19.0
+Requires-Dist: requests>=2.26.0
+Requires-Dist: tqdm>=4.62.0
+Provides-Extra: dev
+Requires-Dist: pytest>=6.2.5; extra == "dev"
+Requires-Dist: black>=21.6b0; extra == "dev"
+Requires-Dist: isort>=5.9.2; extra == "dev"
+Requires-Dist: mypy>=0.910; extra == "dev"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: license-file
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

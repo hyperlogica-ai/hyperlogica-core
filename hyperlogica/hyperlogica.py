@@ -16,16 +16,16 @@ import numpy as np
 from datetime import datetime
 
 # Import components
-from config_parser import parse_input_config, validate_config, extract_processing_options
-from config_parser import extract_persistence_options, extract_output_schema
-from vector_operations import generate_vector, normalize_vector
-from vector_store import create_store, add_vector, get_vector, save_store, load_store
-from llm_interface import convert_english_to_acep, convert_acep_to_english
-from reasoning_engine import apply_modus_ponens, calculate_certainty, recalibrate_certainty
-from state_management import create_state, add_concept_to_state, add_relation_to_state, save_state, load_state
-from logging_utils import initialize_logger, log_reasoning_step, log_llm_interaction
-from reasoning_approaches import apply_reasoning_approach
-from error_handling import success, error, is_success, is_error, get_value, get_error
+from .config_parser import parse_input_config, validate_config, extract_processing_options
+from .config_parser import extract_persistence_options, extract_output_schema
+from .vector_operations import generate_vector, normalize_vector
+from .vector_store import create_store, add_vector, get_vector, save_store, load_store
+from .llm_interface import convert_english_to_acep, convert_acep_to_english
+from .reasoning_engine import apply_modus_ponens, calculate_certainty, recalibrate_certainty
+from .state_management import create_state, add_concept_to_state, add_relation_to_state, save_state, load_state
+from .logging_utils import initialize_logger, log_reasoning_step, log_llm_interaction
+from .reasoning_approaches import apply_reasoning_approach
+from .error_handling import success, error, is_success, is_error, get_value, get_error
 
 
 def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -58,6 +58,19 @@ def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None
     output_path = options.get("output_path", None)
     timeout = options.get("timeout", 3600)  # Default timeout: 1 hour
     
+    # Get the log_path from options and make it absolute
+    log_path = options.get("log_path", "./logs")
+    log_path = os.path.abspath(log_path)
+    
+    # Create logs directory if it doesn't exist
+    os.makedirs(log_path, exist_ok=True)
+    
+    # Initialize logger early with the absolute log path
+    logger = initialize_logger(
+        log_path=log_path,
+        log_level="info"
+    )
+    
     try:
         # Step 1: Parse and validate configuration
         if verbose:
@@ -75,7 +88,7 @@ def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None
         persistence_options = extract_persistence_options(validated_config)
         output_schema = extract_output_schema(validated_config)
         
-        # Set up logging
+        # Update logger with config settings
         log_config = validated_config.get("logging", {})
         logger = initialize_logger(
             log_path=log_config.get("log_path", "./logs"),

@@ -134,20 +134,19 @@ def parse_input_config(input_path: str) -> Dict[str, Any]:
         FileNotFoundError: If the specified file does not exist.
         json.JSONDecodeError: If the file contains invalid JSON.
     """
-    # Check if file exists
-    if not os.path.exists(input_path):
-        logger.error(f"Configuration file not found: {input_path}")
-        raise FileNotFoundError(f"Configuration file not found: {input_path}")
-    
-    # Parse JSON file
     try:
-        with open(input_path, 'r') as file:
-            config_dict = json.load(file)
-            logger.info(f"Successfully parsed configuration file: {input_path}")
-            return config_dict
+        if not os.path.exists(input_path):
+            return error(f"Configuration file not found: {input_path}")
+        
+        with open(input_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        print(f"Successfully parsed configuration file: {input_path}")
+        return success(config)  # This should return (config, None)
     except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in configuration file: {e}")
-        raise
+        return error(f"Invalid JSON in configuration file: {str(e)}")
+    except Exception as e:
+        return error(f"Error parsing configuration: {str(e)}")
 
 def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
