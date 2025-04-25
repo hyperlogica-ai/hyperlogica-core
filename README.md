@@ -374,6 +374,8 @@ hyperlogica-core/
 │   ├── __init__.py               # Package initialization
 │   ├── config_parser.py          # Configuration handling
 │   ├── vector_operations.py      # Vector mathematical operations
+│   ├── hyperlogica.py            # Core hyperlogica program
+│   ├── hyperlogica_pipeline.py   # Hyperlogica pipeline
 │   ├── vector_store.py           # Vector storage and retrieval
 │   ├── llm_interface.py          # Language model integration
 │   ├── reasoning_engine.py       # Reasoning implementation
