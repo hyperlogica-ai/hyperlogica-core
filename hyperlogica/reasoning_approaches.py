@@ -409,10 +409,32 @@ def majority_approach(rules: List[Dict], facts: List[Dict],
 
 @register_reasoning_approach("weighted")
 def weighted_approach(rules: list, facts: list, store: dict, state: dict, config: dict) -> dict:
-    """Generic weighted evidence reasoning approach using vector similarity."""
-    import numpy as np
-    import logging
+    """
+    Apply a weighted evidence reasoning approach using vector similarity for matching rules to facts.
     
+    This function implements a reasoning strategy that:
+    1. Extracts antecedents and consequents from rules
+    2. Uses cosine similarity to match rule conditions to facts
+    3. Generates conclusions when similarities exceed a configurable threshold
+    4. Classifies evidence as positive, negative, or neutral based on keywords
+    5. Weighs evidence to determine an overall recommendation
+    
+    Args:
+        rules (list): List of rule dictionaries, each containing vector representations and attributes
+        facts (list): List of fact dictionaries, each containing vector representations and attributes
+        store (dict): Vector store containing additional information about rules and facts
+        state (dict): Current state dictionary for tracking context
+        config (dict): Configuration dictionary containing reasoning parameters, including:
+                      - similarity_threshold: Minimum similarity score to consider a match (default: 0.5)
+                      - domain_config: Dictionary with domain-specific settings
+    
+    Returns:
+        dict: Dictionary containing reasoning results with the following keys:
+              - outcome (str): Final recommendation (e.g., "BUY", "SELL", "HOLD")
+              - certainty (float): Confidence level in the recommendation (0.5-1.0)
+              - conclusions (list): List of derived conclusions with their sources
+              - evidence_weights (dict): Breakdown of positive, negative, and neutral evidence weights
+    """
     logging.info("Applying weighted reasoning approach with vector similarity")
     
     domain_config = config.get("domain_config", {})
@@ -420,8 +442,8 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
     negative_outcome = domain_config.get("negative_outcome", "SELL")
     neutral_outcome = domain_config.get("neutral_outcome", "HOLD")
     
-    # Similarity threshold for matching
-    similarity_threshold = config.get("similarity_threshold", 0.7)
+    # Lower similarity threshold
+    similarity_threshold = config.get("similarity_threshold", 0.5)
     logging.info(f"Using similarity threshold: {similarity_threshold}")
     
     positive_evidence = 0.0
@@ -431,28 +453,51 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
     
     # Process rules and facts with weighting and vector similarity
     for rule in rules:
-        logging.info(f"Evaluating rule: {rule.get('identifier')}")
+        rule_id = rule.get('identifier', 'unknown')
+        logging.info(f"Evaluating rule: {rule_id}")
         
         if 'attributes' not in rule or not rule.get('vector', None) is not None:
-            logging.warning(f"Rule missing attributes or vector: {rule.get('identifier')}")
+            logging.warning(f"Rule missing attributes or vector: {rule_id}")
             continue
             
         # Check if this is a conditional rule
         rule_text = rule.get('attributes', {}).get('rule_text', '')
+        logging.info(f"Rule text: {rule_text}")
+        
+        # Extract antecedent - from attributes or from text
+        antecedent = rule.get('attributes', {}).get('antecedent', '')
+        if not antecedent and 'if' in rule_text.lower() and 'then' in rule_text.lower():
+            parts = rule_text.lower().split('then')
+            antecedent_part = parts[0]
+            if antecedent_part.startswith('if '):
+                antecedent = antecedent_part[3:].strip()
+        
+        logging.info(f"Rule antecedent: {antecedent}")
+        
+        # Extract consequent from attributes or from text
+        consequent = rule.get('attributes', {}).get('consequent', '')
+        if not consequent and 'if' in rule_text.lower() and 'then' in rule_text.lower():
+            parts = rule_text.lower().split('then')
+            if len(parts) > 1:
+                consequent = parts[1].strip()
+        
+        logging.info(f"Rule consequent: {consequent}")
+        
+        # Only proceed if we have a conditional rule
         is_conditional = ('if' in rule_text.lower() and 'then' in rule_text.lower()) or rule.get('attributes', {}).get('conditional', False)
         
         if is_conditional:
-            # Extract antecedent vector - either directly or from rule vector
-            antecedent = rule.get('attributes', {}).get('antecedent', '')
             rule_vector = rule.get('vector')
-            
-            logging.info(f"Rule antecedent: {antecedent}")
             
             # Check each fact for similarity to this rule's antecedent
             for fact in facts:
+                fact_id = fact.get('identifier', 'unknown')
                 if 'vector' not in fact:
-                    logging.warning(f"Fact missing vector: {fact.get('identifier')}")
+                    logging.warning(f"Fact missing vector: {fact_id}")
                     continue
+                
+                fact_text = fact.get('attributes', {}).get('fact_text', '')
+                logging.info(f"Comparing to fact: {fact_id}: {fact_text}")
                 
                 fact_vector = fact.get('vector')
                 
@@ -466,24 +511,25 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
                 else:
                     similarity = dot_product / (rule_norm * fact_norm)
                 
-                logging.info(f"Similarity between rule {rule.get('identifier')} and fact {fact.get('identifier')}: {similarity:.4f}")
+                logging.info(f"Similarity between rule {rule_id} and fact {fact_id}: {similarity:.4f}")
                 
                 # If similarity exceeds threshold, consider it a match
                 if similarity >= similarity_threshold:
-                    logging.info(f"Match found! Rule {rule.get('identifier')} matches fact {fact.get('identifier')}")
+                    logging.info(f"Match found! Rule {rule_id} matches fact {fact_id}")
                     
                     # Create a conclusion based on this match
-                    consequent = rule.get('attributes', {}).get('consequent', '')
+                    if not consequent:
+                        consequent = "Derived conclusion from rule"
                     
                     conclusion = {
                         "identifier": f"conclusion_{len(conclusions)+1}",
-                        "source_rule": rule.get('identifier'),
-                        "source_fact": fact.get('identifier'),
+                        "source_rule": rule_id,
+                        "source_fact": fact_id,
                         "text": consequent,
                         "similarity": similarity,
                         "attributes": {
                             "certainty": min(rule.get('attributes', {}).get('certainty', 0.8), 
-                                          fact.get('attributes', {}).get('certainty', 0.8)) * similarity
+                                         fact.get('attributes', {}).get('certainty', 0.8)) * similarity
                         }
                     }
                     

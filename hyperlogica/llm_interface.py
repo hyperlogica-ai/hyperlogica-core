@@ -49,26 +49,28 @@ def create_english_to_acep_prompt(text: str, context: Dict[str, Any]) -> str:
     certainty = context.get("certainty", 0.9)
     
     prompt = f"""
-    Convert this text to a structured representation suitable for AI-to-AI communication:
-    
+    Convert this statement to ACEP representation:
+
     Text: {text}
-    
-    Context:
-    - Domain: {domain}
-    - Entity ID: {entity_id}
-    - Base certainty: {certainty}
-    
-    Extract:
-    - Is this a conditional statement (if-then)?
-    - What are the key concepts?
-    - What relationships exist between concepts?
-    - What is an appropriate level of certainty?
-    
-    Format the response as a JSON object with:
-    - identifier: A unique machine-readable ID for this concept
-    - type: Either "concept", "relation", or "rule"
-    - content: The primary content or meaning
-    - attributes: Additional metadata including certainty and domain-specific information
+
+    For conditional statements (if-then), EXPLICITLY extract:
+    1. The ANTECEDENT (the "if" part) as a separate field
+    2. The CONSEQUENT (the "then" part) as a separate field
+    3. Assign a meaningful identifier that reflects the content
+
+    Example format for a conditional:
+    {{
+    "identifier": "pe_ratio_below_industry_implies_undervalued",
+    "attributes": {{
+        "rule_text": "If P/E ratio is below industry average, then the stock is potentially undervalued",
+        "antecedent": "P/E ratio is below industry average",
+        "consequent": "the stock is potentially undervalued",
+        "conditional": true,
+        "certainty": 0.8
+    }}
+    }}
+
+    For facts, provide a meaningful identifier and appropriate attributes.
     """
     
     return prompt
