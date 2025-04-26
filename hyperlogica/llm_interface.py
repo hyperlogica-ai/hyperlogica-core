@@ -49,7 +49,7 @@ def create_english_to_acep_prompt(text: str, context: Dict[str, Any]) -> str:
     certainty = context.get("certainty", 0.9)
     
     prompt = f"""
-    Convert this statement to ACEP representation:
+    Convert this statement to ACEP representation and return as JSON:
 
     Text: {text}
 
@@ -271,50 +271,67 @@ def parse_acep_representation(response: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Invalid response structure: {str(e)}")
 
 
-def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> Dict[str, Any]:
+def convert_english_to_acep(text: str, context: dict, llm_options: dict) -> dict:
     """
-    Convert English text to ACEP representation using LLM.
+    Convert English text to ACEP representation using an LLM.
     
     Args:
-        text (str): English text to convert.
-        context (dict): Contextual information about the domain and entity.
-        llm_options (dict, optional): Options for the LLM API call, 
-                                     including model, temperature, etc.
+        text (str): English text to convert
+        context (dict): Contextual information about the domain and entity
+        llm_options (dict): Options for the LLM API call
         
     Returns:
-        dict: Structured ACEP representation of the input text.
+        dict: ACEP representation of the input text
         
     Raises:
-        ValueError: If the text cannot be converted to a valid ACEP representation.
+        ValueError: If the text cannot be converted to a valid ACEP representation
+        OpenAIError: If the API call fails
     """
-    logger.info(f"Converting to ACEP: {text[:50]}...")
+    # Generate the prompt using our helper function
+    prompt = get_english_to_acep_prompt(text, context)
     
-    # Set default LLM options if not provided
-    if llm_options is None:
-        llm_options = {
-            "temperature": 0.0,
-            "max_tokens": 1000
-        }
+    # Log the conversion attempt
+    logging.info(f"Converting to ACEP: {text[:50]}...")
     
-    model = llm_options.get("model", "gpt-4-turbo")
+    # Configure API call
+    model = llm_options.get("model", "gpt-4")
+    temperature = llm_options.get("temperature", 0.0)
+    max_tokens = llm_options.get("max_tokens", 2000)
     
-    # Create prompt for the LLM
-    prompt = create_english_to_acep_prompt(text, context)
+    logging.info(f"Calling OpenAI API with model: {model}")
     
-    # Call the API
-    response = call_openai_api(prompt, model, llm_options)
-    
-    # Parse the response into ACEP representation
-    acep_representation = parse_acep_representation(response)
-    
-    # Set some attributes if not already present
-    if "entity_id" not in acep_representation["attributes"] and "entity_id" in context:
-        acep_representation["attributes"]["entity_id"] = context["entity_id"]
-    
-    if "domain" not in acep_representation["attributes"] and "domain" in context:
-        acep_representation["attributes"]["domain"] = context["domain"]
-    
-    return acep_representation
+    try:
+        # Make the API call
+        response = openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an expert in AI knowledge representation."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"}
+        )
+        
+        # Extract and parse the response
+        content = response.choices[0].message.content
+        acep_representation = json.loads(content)
+        
+        # Validate the response has required fields
+        required_fields = ["type", "identifier", "attributes"]
+        for field in required_fields:
+            if field not in acep_representation:
+                raise ValueError(f"Missing required field '{field}' in ACEP representation")
+                
+        # Ensure certainty is set
+        if "certainty" not in acep_representation.get("attributes", {}):
+            acep_representation["attributes"]["certainty"] = context.get("certainty", 0.9)
+            
+        return acep_representation
+        
+    except Exception as e:
+        logging.error(f"Error converting text to ACEP: {str(e)}")
+        raise
 
 
 def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> str:
