@@ -408,92 +408,118 @@ def majority_approach(rules: List[Dict], facts: List[Dict],
 
 
 @register_reasoning_approach("weighted")
-def weighted_approach(rules: List[Dict], facts: List[Dict], 
-                     store: Dict, state: Dict, config: Dict) -> Dict:
-    """
-    Generic weighted evidence reasoning approach that considers the certainty and
-    importance of each signal when determining the outcome.
+def weighted_approach(rules: list, facts: list, store: dict, state: dict, config: dict) -> dict:
+    """Generic weighted evidence reasoning approach using vector similarity."""
+    import numpy as np
+    import logging
     
-    Args:
-        rules (list): List of processed rule representations
-        facts (list): List of processed fact representations
-        store (dict): Vector store containing rule and fact vectors
-        state (dict): State dictionary for tracking reasoning context
-        config (dict): Configuration dictionary containing reasoning settings
-                      and domain-specific parameters
-        
-    Returns:
-        dict: Results dictionary containing:
-              - outcome (str): Final recommendation based on weighted evidence
-              - certainty (float): Confidence in the outcome (0.5-1.0)
-              - conclusions (list): List of derived conclusions
-              - evidence_weights (dict): Weights of positive, negative, and neutral evidence
-    """
-    logger.info("Applying weighted reasoning approach")
+    logging.info("Applying weighted reasoning approach with vector similarity")
     
-    # Extract domain configuration
-    domain_config = config.get("processing", {}).get("domain_config", {})
-    positive_outcome = domain_config.get("positive_outcome", "POSITIVE")
-    negative_outcome = domain_config.get("negative_outcome", "NEGATIVE")
-    neutral_outcome = domain_config.get("neutral_outcome", "NEUTRAL")
+    domain_config = config.get("domain_config", {})
+    positive_outcome = domain_config.get("positive_outcome", "BUY")
+    negative_outcome = domain_config.get("negative_outcome", "SELL")
+    neutral_outcome = domain_config.get("neutral_outcome", "HOLD")
     
-    # Initialize weights and storage
+    # Similarity threshold for matching
+    similarity_threshold = config.get("similarity_threshold", 0.7)
+    logging.info(f"Using similarity threshold: {similarity_threshold}")
+    
     positive_evidence = 0.0
     negative_evidence = 0.0
     neutral_evidence = 0.0
     conclusions = []
-    evidence_details = []
     
-    # Process rules and facts with weighting
+    # Process rules and facts with weighting and vector similarity
     for rule in rules:
-        if is_conditional(rule):
-            # Extract rule weight (importance factor)
-            rule_weight = rule.get("weight", 1.0)
-            if "attributes" in rule:
-                rule_weight = rule["attributes"].get("importance", rule_weight)
+        logging.info(f"Evaluating rule: {rule.get('identifier')}")
+        
+        if 'attributes' not in rule or not rule.get('vector', None) is not None:
+            logging.warning(f"Rule missing attributes or vector: {rule.get('identifier')}")
+            continue
             
-            antecedent = extract_antecedent(rule)
-            logger.debug(f"Checking rule with antecedent: {antecedent}, weight: {rule_weight}")
+        # Check if this is a conditional rule
+        rule_text = rule.get('attributes', {}).get('rule_text', '')
+        is_conditional = ('if' in rule_text.lower() and 'then' in rule_text.lower()) or rule.get('attributes', {}).get('conditional', False)
+        
+        if is_conditional:
+            # Extract antecedent vector - either directly or from rule vector
+            antecedent = rule.get('attributes', {}).get('antecedent', '')
+            rule_vector = rule.get('vector')
             
+            logging.info(f"Rule antecedent: {antecedent}")
+            
+            # Check each fact for similarity to this rule's antecedent
             for fact in facts:
-                if matches(fact, antecedent, store):
-                    logger.debug(f"Matched fact: {fact.get('identifier', '')}")
-                    conclusion = apply_modus_ponens(rule, fact, store)
-                    conclusions.append(conclusion)
+                if 'vector' not in fact:
+                    logging.warning(f"Fact missing vector: {fact.get('identifier')}")
+                    continue
+                
+                fact_vector = fact.get('vector')
+                
+                # Calculate vector similarity using cosine similarity
+                dot_product = np.dot(rule_vector, fact_vector)
+                rule_norm = np.linalg.norm(rule_vector)
+                fact_norm = np.linalg.norm(fact_vector)
+                
+                if rule_norm == 0 or fact_norm == 0:
+                    similarity = 0
+                else:
+                    similarity = dot_product / (rule_norm * fact_norm)
+                
+                logging.info(f"Similarity between rule {rule.get('identifier')} and fact {fact.get('identifier')}: {similarity:.4f}")
+                
+                # If similarity exceeds threshold, consider it a match
+                if similarity >= similarity_threshold:
+                    logging.info(f"Match found! Rule {rule.get('identifier')} matches fact {fact.get('identifier')}")
                     
-                    # Calculate weighted evidence
-                    weight = conclusion.get("certainty", 0.5) * rule_weight
+                    # Create a conclusion based on this match
+                    consequent = rule.get('attributes', {}).get('consequent', '')
                     
-                    # Record evidence detail
-                    evidence_detail = {
-                        "conclusion_id": conclusion.get("identifier", ""),
-                        "raw_certainty": conclusion.get("certainty", 0.5),
-                        "rule_weight": rule_weight,
-                        "weighted_value": weight
+                    conclusion = {
+                        "identifier": f"conclusion_{len(conclusions)+1}",
+                        "source_rule": rule.get('identifier'),
+                        "source_fact": fact.get('identifier'),
+                        "text": consequent,
+                        "similarity": similarity,
+                        "attributes": {
+                            "certainty": min(rule.get('attributes', {}).get('certainty', 0.8), 
+                                          fact.get('attributes', {}).get('certainty', 0.8)) * similarity
+                        }
                     }
                     
-                    # Classify and add weighted evidence
-                    if is_signal_type(conclusion, "positive", domain_config):
-                        positive_evidence += weight
-                        evidence_detail["signal_type"] = "positive"
-                        logger.debug(f"Positive signal with weight: {weight}")
-                    elif is_signal_type(conclusion, "negative", domain_config):
-                        negative_evidence += weight
-                        evidence_detail["signal_type"] = "negative"
-                        logger.debug(f"Negative signal with weight: {weight}")
-                    else:
-                        neutral_evidence += weight
-                        evidence_detail["signal_type"] = "neutral"
-                        logger.debug(f"Neutral signal with weight: {weight}")
+                    conclusions.append(conclusion)
                     
-                    evidence_details.append(evidence_detail)
+                    # Determine if this is a positive, negative, or neutral signal
+                    conclusion_text = consequent.lower()
+                    
+                    # Check if it contains positive/negative keywords
+                    if any(keyword in conclusion_text for keyword in domain_config.get("positive_outcome_keywords", [])):
+                        signal_type = "positive"
+                        weight = conclusion["attributes"]["certainty"]
+                        positive_evidence += weight
+                        logging.info(f"Added positive evidence: {weight:.4f}")
+                    elif any(keyword in conclusion_text for keyword in domain_config.get("negative_outcome_keywords", [])):
+                        signal_type = "negative"
+                        weight = conclusion["attributes"]["certainty"]
+                        negative_evidence += weight
+                        logging.info(f"Added negative evidence: {weight:.4f}")
+                    else:
+                        signal_type = "neutral"
+                        weight = conclusion["attributes"]["certainty"]
+                        neutral_evidence += weight
+                        logging.info(f"Added neutral evidence: {weight:.4f}")
+                    
+                    # Add signal type to conclusion
+                    conclusion["attributes"]["signal_type"] = signal_type
+    
+    # Log the total evidence found
+    logging.info(f"Evidence weights - Positive: {positive_evidence:.2f}, Negative: {negative_evidence:.2f}, Neutral: {neutral_evidence:.2f}")
     
     # Determine outcome based on weighted evidence
     total_evidence = positive_evidence + negative_evidence + neutral_evidence
-    logger.info(f"Evidence weights - Positive: {positive_evidence:.2f}, Negative: {negative_evidence:.2f}, Neutral: {neutral_evidence:.2f}")
     
     if total_evidence == 0:
-        logger.info("No evidence found, defaulting to neutral outcome")
+        logging.info("No evidence found, defaulting to neutral outcome")
         return {
             "outcome": neutral_outcome,
             "certainty": 0.5,
@@ -502,25 +528,21 @@ def weighted_approach(rules: List[Dict], facts: List[Dict],
                 "positive": positive_evidence,
                 "negative": negative_evidence,
                 "neutral": neutral_evidence
-            },
-            "evidence_details": evidence_details
+            }
         }
     
-    # Calculate outcome and certainty
     if positive_evidence > negative_evidence:
         outcome = positive_outcome
-        # Certainty scales from 0.5 to 1.0 based on ratio of positive evidence to total
-        certainty = 0.5 + ((positive_evidence / total_evidence) * 0.5)
-        logger.info(f"Stronger positive evidence, outcome: {outcome}, certainty: {certainty:.2f}")
+        certainty = 0.5 + (positive_evidence / total_evidence) * 0.5
+        logging.info(f"Positive evidence dominates: {positive_evidence:.2f} > {negative_evidence:.2f}, certainty: {certainty:.2f}")
     elif negative_evidence > positive_evidence:
         outcome = negative_outcome
-        # Certainty scales from 0.5 to 1.0 based on ratio of negative evidence to total
-        certainty = 0.5 + ((negative_evidence / total_evidence) * 0.5)
-        logger.info(f"Stronger negative evidence, outcome: {outcome}, certainty: {certainty:.2f}")
+        certainty = 0.5 + (negative_evidence / total_evidence) * 0.5
+        logging.info(f"Negative evidence dominates: {negative_evidence:.2f} > {positive_evidence:.2f}, certainty: {certainty:.2f}")
     else:
         outcome = neutral_outcome
         certainty = 0.5
-        logger.info(f"Balanced evidence, outcome: {outcome}, certainty: {certainty:.2f}")
+        logging.info("Evidence is balanced, neutral outcome")
     
     return {
         "outcome": outcome,
@@ -530,8 +552,7 @@ def weighted_approach(rules: List[Dict], facts: List[Dict],
             "positive": positive_evidence,
             "negative": negative_evidence,
             "neutral": neutral_evidence
-        },
-        "evidence_details": evidence_details
+        }
     }
 
 
