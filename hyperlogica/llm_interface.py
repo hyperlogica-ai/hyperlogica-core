@@ -7,6 +7,7 @@ specifically for converting between natural language and ACEP representations.
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -15,12 +16,16 @@ import random
 import numpy as np
 from typing import Dict, List, Any, Tuple, Optional
 from datetime import datetime
-import openai
-import backoff  # Make sure this is installed: pip install backoff
+from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
 
 # Check for API key
 if "OPENAI_API_KEY" not in os.environ:
@@ -106,18 +111,18 @@ def create_acep_to_english_prompt(acep_representation: Dict[str, Any], context: 
     return prompt
 
 
-@backoff.on_exception(backoff.expo, Exception, max_tries=3)
 def call_openai_api(prompt: str, model: str, options: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Call the OpenAI API with the given prompt, with retry logic.
+    Call the OpenAI API with the given prompt, using built-in retry logic.
+    Always returns JSON formatted responses.
     
     Args:
         prompt (str): The prompt to send to the API.
         model (str): Name of the OpenAI model to use (e.g., "gpt-4").
         options (dict): Additional API options such as temperature, max_tokens, etc.
-    
+        
     Returns:
-        dict: The API response containing the model's output.
+        dict: The API response containing the model's output in JSON format.
         
     Raises:
         Exception: If the API call fails after retries.
@@ -125,15 +130,20 @@ def call_openai_api(prompt: str, model: str, options: Dict[str, Any]) -> Dict[st
     try:
         logger.info(f"Calling OpenAI API with model: {model}")
         
-        # Just use the valid parameters that the API accepts
-        response = openai.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=options.get("temperature", 0.0),
-            max_tokens=options.get("max_tokens", 1000),
-            response_format={"type": "json_object"} if options.get("response_format") else None
-        )
+        # Initialize the OpenAI client
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         
+        # Prepare API call parameters
+        api_params = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": options.get("temperature", 0.0),
+            "max_tokens": options.get("max_tokens", 1000),
+            "response_format": {"type": "json_object"}  # Always use json_object format
+        }
+        
+        # Make the API call - OpenAI's client has built-in retry logic
+        response = client.chat.completions.create(**api_params)
         return response
         
     except Exception as e:
@@ -208,8 +218,31 @@ def parse_acep_representation(response: Dict[str, Any]) -> Dict[str, Any]:
         # Extract content from response
         content = response.choices[0].message.content
         
-        # Parse JSON from content
-        acep_data = json.loads(content)
+        # Log the raw content for debugging
+        logger.debug(f"Raw LLM response content: {content}")
+        
+        # Handle potential JSON parsing errors
+        try:
+            # First, try to parse the content directly
+            acep_data = json.loads(content)
+        except json.JSONDecodeError as json_err:
+            logger.warning(f"Initial JSON parse failed: {str(json_err)}")
+            
+            # Try to clean the content - sometimes the model outputs markdown-formatted JSON
+            if "```json" in content:
+                # Extract JSON from markdown code blocks
+                json_block = content.split("```json")[1].split("```")[0].strip()
+                acep_data = json.loads(json_block)
+            else:
+                # Try to find and extract a JSON object
+                import re
+                json_pattern = r'({.*})'
+                match = re.search(json_pattern, content, re.DOTALL)
+                if match:
+                    json_str = match.group(1)
+                    acep_data = json.loads(json_str)
+                else:
+                    raise ValueError(f"Could not extract valid JSON from response: {content[:100]}...")
         
         # Validate minimum required fields
         required_fields = ["identifier", "type"]
@@ -261,7 +294,7 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
             "max_tokens": 1000
         }
     
-    model = llm_options.get("model", "gpt-4")
+    model = llm_options.get("model", "gpt-4-turbo")
     
     # Create prompt for the LLM
     prompt = create_english_to_acep_prompt(text, context)
@@ -658,22 +691,33 @@ if __name__ == "__main__":
     # Simple test function to verify functionality
     def test_api_call():
         if "OPENAI_API_KEY" not in os.environ:
-            print("OpenAI API key not found in environment variables. Skipping test.")
-            return
-        
-        print("Testing OpenAI API call...")
-        
+            return {
+                "success": False,
+                "error": "OpenAI API key not found in environment variables."
+            }
+        #openai.api_key = os.environ["OPENAI_API_KEY"]
+        client = OpenAI()
         try:
-            response = call_openai_api(
-                prompt="What are the advantages of vector-based AI communication?",
-                model="gpt-3.5-turbo",
-                options={"temperature": 0.7, "max_tokens": 100}
+            response = client.chat.completions.create(
+                model="gpt-4-turbo", # Equivalent to GPT-4.1
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "What are the advantages of vector-based AI communication? Respond in JSON format with keys 'summary' and 'points' (a list)."
+                    },
+                ],
+                temperature=0.7,
+                max_tokens=200,
+                response_format={"type": "json_object"} # Changed from string to object with 'type' field
             )
-            
-            print("API call successful!")
-            print(f"Response: {response.choices[0].message.content}")
-            
+            return {
+                "success": True,
+                "response": response.choices[0].message.content
+            }
         except Exception as e:
-            print(f"API test failed: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
     
-    test_api_call()
+    print(test_api_call())

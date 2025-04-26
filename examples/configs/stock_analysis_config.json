@@ -101,7 +101,7 @@
     "explanation_detail_level": "medium"
   },
   "llm": {
-    "model": "gpt-4",
+    "model": "gpt-4-turbo",
     "temperature": 0.0,
     "max_tokens": 2000,
     "embedding_model": "text-embedding-ada-002",
