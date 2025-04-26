@@ -271,6 +271,80 @@ def parse_acep_representation(response: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Invalid response structure: {str(e)}")
 
 
+def get_english_to_acep_prompt(text: str, context: dict) -> str:
+    """
+    Generate a prompt for converting English text to ACEP representation.
+    
+    Args:
+        text (str): The English text to convert to ACEP
+        context (dict): Contextual information about the domain and entity
+        
+    Returns:
+        str: A formatted prompt for the LLM
+    """
+    domain = context.get("domain", "general")
+    certainty = context.get("certainty", 0.9)
+    entity_id = context.get("entity_id", "")
+    
+    prompt = f"""
+    Convert this statement to ACEP (AI Conceptual Exchange Protocol) representation:
+
+    Text: {text}
+    Domain: {domain}
+    Entity: {entity_id}
+    
+    The ACEP representation must include these mandatory fields:
+    1. "type" - Must be one of: "concept", "relation", or "operation"
+    2. "identifier" - A unique, descriptive ID reflecting the content
+    3. "attributes" - A dictionary of attributes including certainty
+    
+    For conditional statements (if-then), also include:
+    - Set type to "relation"
+    - "attributes.conditional" set to true
+    - "attributes.antecedent" - The exact "if" part of the statement
+    - "attributes.consequent" - The exact "then" part of the statement
+    - "attributes.rule_text" - The full original text
+    
+    Example ACEP representation for a conditional rule:
+    ```json
+    {{
+      "type": "relation",
+      "identifier": "pe_ratio_below_industry_implies_undervalued",
+      "attributes": {{
+        "rule_text": "If P/E ratio is below industry average, then the stock is potentially undervalued",
+        "antecedent": "P/E ratio is below industry average",
+        "consequent": "the stock is potentially undervalued",
+        "conditional": true,
+        "certainty": 0.8
+      }}
+    }}
+    ```
+    
+    Example ACEP representation for a fact:
+    ```json
+    {{
+      "type": "concept",
+      "identifier": "aapl_pe_ratio_below_industry",
+      "attributes": {{
+        "fact_text": "P/E ratio is 28.5, which is below the technology industry average of 32.8",
+        "entity_id": "AAPL",
+        "metric_type": "pe_ratio",
+        "value": 28.5,
+        "assessment": "below_average",
+        "certainty": 0.95
+      }}
+    }}
+    ```
+    
+    Ensure you include ALL mandatory fields and provide meaningful values that accurately represent the statement.
+    Make the identifier descriptive and reflective of the content.
+    
+    Return only the ACEP representation as valid JSON.
+    """
+    
+    return prompt
+
+
 def convert_english_to_acep(text: str, context: dict, llm_options: dict) -> dict:
     """
     Convert English text to ACEP representation using an LLM.
@@ -287,6 +361,10 @@ def convert_english_to_acep(text: str, context: dict, llm_options: dict) -> dict
         ValueError: If the text cannot be converted to a valid ACEP representation
         OpenAIError: If the API call fails
     """
+
+    # Initialize the OpenAI client
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    
     # Generate the prompt using our helper function
     prompt = get_english_to_acep_prompt(text, context)
     
@@ -294,7 +372,7 @@ def convert_english_to_acep(text: str, context: dict, llm_options: dict) -> dict
     logging.info(f"Converting to ACEP: {text[:50]}...")
     
     # Configure API call
-    model = llm_options.get("model", "gpt-4")
+    model = llm_options.get("model", "gpt-4-turbo")
     temperature = llm_options.get("temperature", 0.0)
     max_tokens = llm_options.get("max_tokens", 2000)
     
@@ -302,7 +380,7 @@ def convert_english_to_acep(text: str, context: dict, llm_options: dict) -> dict
     
     try:
         # Make the API call
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You are an expert in AI knowledge representation."},
