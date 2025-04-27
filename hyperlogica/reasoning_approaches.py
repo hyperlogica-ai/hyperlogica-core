@@ -14,6 +14,7 @@ import numpy as np
 from typing import Dict, List, Any, Callable, Union, Tuple, Optional
 import logging
 from functools import reduce
+from datetime import datetime
 
 # Import vector operations
 from .vector_operations import (
@@ -30,7 +31,141 @@ from .reasoning_engine import (
 logger = logging.getLogger(__name__)
 
 # Registry for reasoning approaches
-reasoning_approaches: Dict[str, Callable] = {}
+reasoning_approaches: dict[str, Callable] = {}
+
+# Helper functions for rule and fact processing
+def extract_antecedent(rule: dict[str, any]) -> str:
+    """
+    Extract the antecedent (if-part) from a rule.
+    
+    Args:
+        rule (Dict[str, Any]): Rule representation
+        
+    Returns:
+        str: Antecedent text
+        
+    Raises:
+        ValueError: If rule is not conditional or antecedent can't be extracted
+    """
+    # Check attributes first
+    attributes = rule.get("attributes", {})
+    if "antecedent" in attributes:
+        return attributes["antecedent"]
+    
+    # Check if rule_text is available
+    rule_text = attributes.get("rule_text", "")
+    if "if" in rule_text.lower() and "then" in rule_text.lower():
+        parts = rule_text.lower().split("then")
+        antecedent = parts[0].replace("if", "", 1).strip()
+        return antecedent
+    
+    # Check identifier for patterns like "consequent_if_antecedent"
+    identifier = rule.get("identifier", "")
+    if "_if_" in identifier:
+        parts = identifier.split("_if_")
+        if len(parts) == 2:
+            return parts[1]
+    
+    # Can't extract antecedent
+    raise ValueError(f"Cannot extract antecedent from rule: {rule.get('identifier', '')}")
+
+def extract_consequent(rule: dict[str, any]) -> str:
+    """
+    Extract the consequent (then-part) from a rule.
+    
+    Args:
+        rule (Dict[str, Any]): Rule representation
+        
+    Returns:
+        str: Consequent text
+        
+    Raises:
+        ValueError: If rule is not conditional or consequent can't be extracted
+    """
+    # Check attributes first
+    attributes = rule.get("attributes", {})
+    if "consequent" in attributes:
+        return attributes["consequent"]
+    
+    # Check if rule_text is available
+    rule_text = attributes.get("rule_text", "")
+    if "if" in rule_text.lower() and "then" in rule_text.lower():
+        parts = rule_text.lower().split("then")
+        if len(parts) >= 2:
+            consequent = parts[1].strip().rstrip(".")
+            return consequent
+    
+    # Check identifier for patterns like "consequent_if_antecedent"
+    identifier = rule.get("identifier", "")
+    if "_if_" in identifier:
+        parts = identifier.split("_if_")
+        if len(parts) == 2:
+            return parts[0]
+    
+    # Can't extract consequent
+    raise ValueError(f"Cannot extract consequent from rule: {rule.get('identifier', '')}")
+
+def matches(fact: dict[str, any], pattern: str, store: Dict[str, any]) -> Tuple[bool, float]:
+    """
+    Check if a fact matches a pattern based on text similarity or vector similarity.
+    
+    Args:
+        fact (Dict[str, Any]): Fact representation
+        pattern (str): Pattern to match against
+        store (Dict[str, Any]): Vector store for looking up pattern vectors
+        
+    Returns:
+        Tuple[bool, float]: (match_result, similarity_score)
+    """
+    # Get fact text or identifier for text matching
+    fact_text = fact.get("attributes", {}).get("text", "").lower()
+    fact_id = fact.get("identifier", "").lower()
+    
+    # Direct text matching
+    if pattern.lower() in fact_text or pattern.lower() in fact_id:
+        return True, 0.9  # High confidence for direct text match
+    
+    # Get fact vector for vector matching
+    if "vector" in fact:
+        fact_vector = fact["vector"]
+        
+        # If pattern is in store, use its vector
+        pattern_vector = None
+        for concept_id, concept in store.get("concepts", {}).items():
+            concept_text = concept.get("metadata", {}).get("text", "").lower()
+            if pattern.lower() in concept_text:
+                pattern_vector = concept.get("vector")
+                break
+        
+        # If we found a pattern vector, calculate similarity
+        if pattern_vector is not None:
+            similarity = calculate_similarity(fact_vector, pattern_vector)
+            return similarity >= 0.7, similarity
+    
+    # No match found
+    return False, 0.0
+
+def cleanse_vector(vector: np.ndarray) -> np.ndarray:
+    """
+    Cleanse a vector by removing NaN or infinite values and normalizing.
+    
+    Args:
+        vector (np.ndarray): Vector to cleanse
+        
+    Returns:
+        np.ndarray: Cleansed vector
+    """
+    # Replace NaN or infinite values with zeros
+    vector = np.nan_to_num(vector)
+    
+    # Normalize to unit length
+    norm = np.linalg.norm(vector)
+    if norm < 1e-10:  # If vector is too small, create random vector
+        vector = np.random.normal(0, 1, vector.shape)
+        norm = np.linalg.norm(vector)
+    
+    return vector / norm
+
 
 def register_reasoning_approach(name: str):
     """

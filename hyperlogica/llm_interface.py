@@ -51,24 +51,42 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
     vector_dim = context.get("vector_dimension", 10000)
     
     # Create prompt for ACEP angle-bracket syntax
-    prompt = f"""
+    prompt = """
     Convert this text to ACEP (AI Conceptual Exchange Protocol) representation using angle-bracket syntax:
     
-    Text: {text}
-    Domain: {domain}
-    Entity: {entity_id}
+    Text: {0}
+    Domain: {1}
+    Entity: {2}
     
     For conditional statements (if-then), use the format:
-    <{{concept:condition}}> → <{{causal:{certainty}}}> → <{{concept:result}}>
+    <{{concept:condition}}> → <{{causal:{3}}}> → <{{concept:result}}>
     
     For facts or statements, use:
-    <{{concept:fact, certainty:{certainty}}}>
+    <{{concept:fact, certainty:{3}}}>
     
     Example for "If it rains, the ground gets wet":
     <{{concept:rain}}> → <{{causal:0.9}}> → <{{concept:ground_wet}}>
     
     Include all relevant attributes and ensure proper ACEP syntax with angle brackets.
-    """
+    
+    Then parse the conditional into structured parts and return a JSON with the 
+    antecedent, consequent, certainty, and a clean identifier. For example:
+    
+    ```json
+    {{
+      "identifier": "ground_wet_if_rain",
+      "type": "concept",
+      "content": {{
+        "concept": "conditional_relationship"
+      }},
+      "attributes": {{
+        "antecedent": "rain",
+        "consequent": "ground_wet",
+        "certainty": 0.9
+      }}
+    }}
+    ```
+    """.format(text, domain, entity_id, certainty)
     
     # Configure API call
     model = llm_options.get("model", "gpt-4")
@@ -92,6 +110,27 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
         # Extract the response text containing ACEP angle-bracket notation
         acep_text = response.choices[0].message.content.strip()
         
+        # Log the full ACEP text - this is what we've added
+        logging.info(f"ACEP response for '{text[:30]}...': {acep_text}")
+        
+        # Try to parse JSON from the response
+        import re
+        import json
+        
+        # Look for JSON in the response
+        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', acep_text)
+        if json_match:
+            json_str = json_match.group(1).strip()
+            try:
+                acep_data = json.loads(json_str)
+                logging.info(f"Successfully parsed JSON from ACEP response: {json.dumps(acep_data)}")
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse JSON from ACEP response: {json_str}")
+                acep_data = None
+        else:
+            logging.warning("No JSON found in ACEP response")
+            acep_data = None
+        
         # Generate an identifier based on the text
         text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
         identifier = f"{entity_id}_{text_hash}" if entity_id else f"concept_{text_hash}"
@@ -102,6 +141,51 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
         # Check if this is a conditional (rule) or fact
         is_conditional_statement = "→" in acep_text or "->" in acep_text or "if" in text.lower() and "then" in text.lower()
         
+        # Use the parsed JSON data if available
+        if acep_data and isinstance(acep_data, dict):
+            # Use the parsed structure
+            identifier = acep_data.get("identifier", identifier)
+            antecedent = acep_data.get("attributes", {}).get("antecedent", "")
+            consequent = acep_data.get("attributes", {}).get("consequent", "")
+            json_certainty = acep_data.get("attributes", {}).get("certainty", certainty)
+            
+            # Log the parsed components
+            logging.info(f"Using parsed components - ID: {identifier}, Antecedent: {antecedent}, Consequent: {consequent}")
+            
+            if antecedent and consequent:
+                # Generate component vectors
+                antecedent_vector = generate_vector(antecedent, dimension=vector_dimension)
+                consequent_vector = generate_vector(consequent, dimension=vector_dimension)
+                
+                # Bind the antecedent and consequent vectors to create rule vector
+                vector = bind_vectors(antecedent_vector, consequent_vector)
+                
+                # Create ACEP representation with rule components
+                acep_representation = {
+                    "type": acep_data.get("type", "acep_relation"),
+                    "identifier": identifier,
+                    "acep_text": acep_text,
+                    "original_text": text,
+                    "attributes": {
+                        "certainty": json_certainty,
+                        "entity_id": entity_id,
+                        "domain": domain,
+                        "antecedent": antecedent,
+                        "consequent": consequent,
+                        "conditional": True,
+                        "rule_text": text
+                    },
+                    "component_vectors": {
+                        "antecedent": antecedent_vector,
+                        "consequent": consequent_vector
+                    },
+                    "vector": vector
+                }
+                logging.info(f"Created conditional representation with component vectors for {identifier}")
+                return acep_representation
+        
+        # If we don't have parsed JSON or it doesn't have the right structure,
+        # fall back to the original approach
         if is_conditional_statement:
             # Extract antecedent and consequent
             try:
@@ -128,7 +212,8 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
                         "domain": domain,
                         "antecedent": antecedent,
                         "consequent": consequent,
-                        "conditional": True
+                        "conditional": True,
+                        "rule_text": text
                     },
                     "component_vectors": {
                         "antecedent": antecedent_vector,
@@ -149,7 +234,8 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
                         "certainty": certainty,
                         "entity_id": entity_id,
                         "domain": domain,
-                        "conditional": True
+                        "conditional": True,
+                        "rule_text": text
                     },
                     "vector": vector
                 }
@@ -157,11 +243,13 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
             # For facts, generate vectors based on key concepts in the text
             keywords = extract_keywords(text)
             if keywords:
+                logging.info(f"Extracted keywords for {identifier}: {', '.join(keywords)}")
                 # Generate a vector for each keyword and bundle them
                 keyword_vectors = [generate_vector(kw, dimension=vector_dimension) for kw in keywords]
                 vector = bundle_vectors(keyword_vectors)
             else:
                 # Fallback if no keywords found
+                logging.warning(f"No keywords found for {identifier}, using generic vector")
                 vector = generate_vector(identifier, dimension=vector_dimension)
             
             acep_representation = {
@@ -172,7 +260,9 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
                 "attributes": {
                     "certainty": certainty,
                     "entity_id": entity_id,
-                    "domain": domain
+                    "domain": domain,
+                    "text": text,
+                    "fact_text": text
                 },
                 "vector": vector
             }
