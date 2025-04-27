@@ -4,7 +4,7 @@ Hyperlogica Processing Pipeline
 This module contains the core processing pipeline functions for the Hyperlogica system,
 implemented using functional programming principles. This focuses on the main pipeline
 that orchestrates the flow of data through the system, from input parsing through
-reasoning to output generation.
+reasoning to output generation using hyperdimensional vector operations.
 
 The pipeline is designed to be composed of pure functions that transform data without
 side effects, making the system easier to test, debug, and extend.
@@ -21,6 +21,21 @@ import yaml
 import concurrent.futures
 from functools import partial, reduce
 import copy
+
+# Import enhanced components
+from .vector_operations import (
+    generate_vector, normalize_vector, bind_vectors, unbind_vectors,
+    bundle_vectors, calculate_similarity, cleanse_vector
+)
+from .reasoning_engine import (
+    apply_modus_ponens, calculate_certainty, recalibrate_certainty
+)
+from .reasoning_approaches import apply_reasoning_approach
+from .llm_interface import convert_english_to_acep, convert_acep_to_english, generate_explanation
+from .state_management import (
+    create_state, add_concept_to_state, add_relation_to_state, 
+    add_conclusion_to_state, save_state, load_state
+)
 
 # Setup logging
 logging.basicConfig(
@@ -140,7 +155,7 @@ def validate_config(config: Dict[str, Any]) -> Result:
     validated = copy.deepcopy(config)
     
     # Check required sections
-    required_sections = ["processing", "input_data", "output_schema"]
+    required_sections = ["processing", "input_data"]
     for section in required_sections:
         if section not in validated:
             return error(f"Missing required configuration section: {section}")
@@ -150,11 +165,18 @@ def validate_config(config: Dict[str, Any]) -> Result:
         processing = validated["processing"]
         processing.setdefault("vector_dimension", 10000)
         processing.setdefault("vector_type", "binary")
-        processing.setdefault("reasoning_approach", "majority")
+        processing.setdefault("reasoning_approach", "vector_weighted")  # Updated default
         processing.setdefault("certainty_propagation", "min")
         processing.setdefault("recalibration_enabled", True)
         processing.setdefault("max_reasoning_depth", 10)
         processing.setdefault("domain_config", {})
+        
+        # Set domain-specific defaults if needed
+        domain_config = processing["domain_config"]
+        domain_config.setdefault("positive_outcome_keywords", ["positive", "increase", "growth"])
+        domain_config.setdefault("negative_outcome_keywords", ["negative", "decrease", "decline"])
+        domain_config.setdefault("neutral_outcome_keywords", ["neutral", "stable", "unchanged"])
+        domain_config.setdefault("similarity_threshold", 0.7)
     
     # Set defaults for persistence options
     if "persistence" not in validated:
@@ -171,7 +193,7 @@ def validate_config(config: Dict[str, Any]) -> Result:
     logging_opts = validated["logging"]
     logging_opts.setdefault("log_level", "info")
     logging_opts.setdefault("log_path", "")
-    logging_opts.setdefault("include_vector_operations", False)
+    logging_opts.setdefault("include_vector_operations", True)  # Updated default
     logging_opts.setdefault("include_llm_interactions", True)
     logging_opts.setdefault("include_reasoning_steps", True)
     
@@ -187,16 +209,24 @@ def validate_config(config: Dict[str, Any]) -> Result:
     input_data = validated["input_data"]
     if "rules" not in input_data or not isinstance(input_data["rules"], list):
         return error("Missing or invalid 'rules' in input_data")
-    if "entities" not in input_data or not isinstance(input_data["entities"], list):
-        return error("Missing or invalid 'entities' in input_data")
     
-    # Check output schema structure
+    # Set defaults for output schema
+    if "output_schema" not in validated:
+        validated["output_schema"] = {}
     output_schema = validated["output_schema"]
-    if "fields" not in output_schema or not isinstance(output_schema["fields"], list):
-        return error("Missing or invalid 'fields' in output_schema")
     output_schema.setdefault("format", "json")
-    output_schema.setdefault("include_reasoning_trace", False)
+    output_schema.setdefault("include_reasoning_trace", True)  # Updated default
     output_schema.setdefault("include_vector_details", False)
+    output_schema.setdefault("include_explanation", True)
+    
+    if "fields" not in output_schema:
+        output_schema["fields"] = [
+            {"name": "entity_id", "type": "string"},
+            {"name": "entity_name", "type": "string"},
+            {"name": "outcome", "type": "string"},
+            {"name": "certainty", "type": "float"},
+            {"name": "reasoning", "type": "object"}
+        ]
     
     logger.info("Configuration validated successfully")
     return success(validated)
@@ -216,7 +246,7 @@ def extract_processing_options(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "vector_dimension": processing.get("vector_dimension", 10000),
         "vector_type": processing.get("vector_type", "binary"),
-        "reasoning_approach": processing.get("reasoning_approach", "majority"),
+        "reasoning_approach": processing.get("reasoning_approach", "vector_weighted"),  # Updated default
         "certainty_propagation": processing.get("certainty_propagation", "min"),
         "recalibration_enabled": processing.get("recalibration_enabled", True),
         "max_reasoning_depth": processing.get("max_reasoning_depth", 10),
@@ -275,7 +305,7 @@ def extract_logging_options(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "log_level": logging_opts.get("log_level", "info"),
         "log_path": logging_opts.get("log_path", ""),
-        "include_vector_operations": logging_opts.get("include_vector_operations", False),
+        "include_vector_operations": logging_opts.get("include_vector_operations", True),  # Updated default
         "include_llm_interactions": logging_opts.get("include_llm_interactions", True),
         "include_reasoning_steps": logging_opts.get("include_reasoning_steps", True)
     }
@@ -295,14 +325,15 @@ def extract_output_schema(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "format": output_schema.get("format", "json"),
         "fields": output_schema.get("fields", []),
-        "include_reasoning_trace": output_schema.get("include_reasoning_trace", False),
+        "include_reasoning_trace": output_schema.get("include_reasoning_trace", True),  # Updated default
+        "include_explanation": output_schema.get("include_explanation", True),
         "include_vector_details": output_schema.get("include_vector_details", False)
     }
 
 
 def create_vector_store(dimension: int, index_type: str = "flat") -> StoreDict:
     """
-    Create a new vector store with FAISS.
+    Create a new vector store with FAISS for high-dimensional vector operations.
     
     Args:
         dimension (int): Dimensionality of vectors to be stored.
@@ -333,6 +364,222 @@ def create_vector_store(dimension: int, index_type: str = "flat") -> StoreDict:
     }
 
 
+def process_entity(entity: EntityDict, rules: List[RuleDict], 
+                  store: StoreDict, state: StateDict, config: ConfigDict) -> ResultDict:
+    """
+    Process a single entity and its facts to generate a result using vector-based reasoning.
+    
+    Args:
+        entity (dict): Entity to process with its facts
+        rules (list): List of rule representations
+        store (dict): Vector store for similarity search
+        state (dict): State dictionary for context
+        config (dict): Configuration options
+        
+    Returns:
+        dict: Processing result for this entity
+    """
+    entity_id = entity.get("id", "")
+    entity_name = entity.get("name", entity_id)
+    entity_facts = entity.get("facts", [])
+    
+    logger.info(f"Processing entity {entity_id} with {len(entity_facts)} facts")
+    
+    # Extract processing and LLM options
+    processing_options = extract_processing_options(config)
+    llm_options = extract_llm_options(config)
+    
+    # Process facts using ACEP and vector representations
+    facts_context = {
+        "entity_id": entity_id,
+        "domain": processing_options.get("domain", "general"),
+        "vector_dimension": processing_options.get("vector_dimension", 10000)
+    }
+    
+    processed_facts = []
+    for fact in entity_facts:
+        fact_text = fact.get("text", "")
+        fact_certainty = fact.get("certainty", 0.9)
+        
+        # Skip empty facts
+        if not fact_text:
+            continue
+            
+        try:
+            # Convert to ACEP representation
+            acep_representation = convert_english_to_acep(
+                fact_text, 
+                {**facts_context, "certainty": fact_certainty}, 
+                llm_options
+            )
+            
+            # Add entity_id if not already present
+            if "entity_id" not in acep_representation.get("attributes", {}):
+                acep_representation["attributes"]["entity_id"] = entity_id
+                
+            # Add to store and state
+            store = add_vector_to_store(
+                store,
+                acep_representation["identifier"],
+                acep_representation["vector"],
+                {
+                    "text": fact_text,
+                    "type": "fact",
+                    "entity_id": entity_id,
+                    "certainty": fact_certainty,
+                    "acep": acep_representation
+                }
+            )
+            
+            state = add_concept_to_state(state, acep_representation)
+            
+            # Add to processed facts
+            processed_facts.append(acep_representation)
+            
+        except Exception as e:
+            logger.error(f"Error processing fact: {str(e)}")
+    
+    # Apply reasoning using the selected approach
+    reasoning_approach = processing_options.get("reasoning_approach", "vector_weighted")
+    
+    try:
+        reasoning_result = apply_reasoning_approach(
+            reasoning_approach,
+            rules,
+            processed_facts,
+            store,
+            state,
+            processing_options
+        )
+        
+        # Add conclusions to state
+        for conclusion in reasoning_result.get("conclusions", []):
+            try:
+                state = add_conclusion_to_state(state, conclusion)
+            except Exception as e:
+                logger.error(f"Error adding conclusion to state: {str(e)}")
+        
+        # Generate entity output
+        entity_output = {
+            "entity_id": entity_id,
+            "entity_name": entity_name,
+            "outcome": reasoning_result.get("outcome", "UNKNOWN"),
+            "certainty": reasoning_result.get("certainty", 0.5),
+            "reasoning": {
+                "conclusions_count": len(reasoning_result.get("conclusions", [])),
+                "reasoning_approach": reasoning_approach
+            }
+        }
+        
+        # Add additional reasoning information based on approach
+        if "evidence_weights" in reasoning_result:
+            entity_output["reasoning"]["evidence_weights"] = reasoning_result["evidence_weights"]
+            
+        if "posteriors" in reasoning_result:
+            entity_output["reasoning"]["posteriors"] = reasoning_result["posteriors"]
+            
+        if "chain_weights" in reasoning_result:
+            entity_output["reasoning"]["chain_weights"] = reasoning_result["chain_weights"]
+            
+        # Generate explanation if requested
+        if config.get("output_schema", {}).get("include_explanation", True):
+            explanation_context = {
+                "domain": processing_options.get("domain", "general"),
+                "entity_id": entity_id,
+                "recommendation": reasoning_result.get("outcome", ""),
+                "certainty": reasoning_result.get("certainty", 0.5)
+            }
+            
+            try:
+                explanation = generate_explanation(reasoning_result, explanation_context, llm_options)
+                entity_output["reasoning"]["explanation"] = explanation
+            except Exception as e:
+                logger.error(f"Error generating explanation: {str(e)}")
+        
+        return entity_output
+        
+    except Exception as e:
+        logger.error(f"Error in reasoning: {str(e)}")
+        return {
+            "entity_id": entity_id,
+            "entity_name": entity_name,
+            "outcome": "ERROR",
+            "certainty": 0.0,
+            "error": str(e)
+        }
+
+
+def process_rules(rules_data: List[Dict[str, Any]], 
+                 llm_options: Dict[str, Any], 
+                 store: StoreDict, 
+                 state: StateDict, 
+                 config: ConfigDict) -> Tuple[List[RuleDict], StoreDict, StateDict]:
+    """
+    Process rules and add them to the store and state with vector representations.
+    
+    Args:
+        rules_data (list): Raw rule data from the configuration
+        llm_options (dict): LLM interface options
+        store (dict): Vector store for similarity search
+        state (dict): State dictionary for context
+        config (dict): Configuration options
+        
+    Returns:
+        tuple: (processed_rules, updated_store, updated_state)
+    """
+    processed_rules = []
+    
+    # Extract processing options
+    vector_dimension = config.get("vector_dimension", 10000)
+    
+    for rule in rules_data:
+        rule_text = rule.get("text", "")
+        rule_certainty = rule.get("certainty", 0.9)
+        
+        # Skip empty rules
+        if not rule_text:
+            continue
+            
+        try:
+            # Convert to ACEP representation
+            rule_context = {
+                "domain": config.get("domain", "general"),
+                "certainty": rule_certainty,
+                "vector_dimension": vector_dimension
+            }
+            
+            acep_representation = convert_english_to_acep(rule_text, rule_context, llm_options)
+            
+            # Ensure certainty is preserved
+            acep_representation["attributes"]["certainty"] = rule_certainty
+            
+            # Add to store
+            store = add_vector_to_store(
+                store,
+                acep_representation["identifier"],
+                acep_representation["vector"],
+                {
+                    "text": rule_text,
+                    "type": "rule",
+                    "certainty": rule_certainty,
+                    "acep": acep_representation
+                }
+            )
+            
+            # Add to state
+            state = add_concept_to_state(state, acep_representation)
+            
+            # Add to processed rules
+            processed_rules.append(acep_representation)
+            
+            logger.info(f"Processed rule: {acep_representation['identifier']}")
+            
+        except Exception as e:
+            logger.error(f"Error processing rule: {str(e)}")
+    
+    return processed_rules, store, state
+
+
 def add_vector_to_store(store: StoreDict, identifier: str, vector: np.ndarray, metadata: Dict[str, Any]) -> StoreDict:
     """
     Add a vector to the store with metadata.
@@ -358,7 +605,7 @@ def add_vector_to_store(store: StoreDict, identifier: str, vector: np.ndarray, m
         return updated_store
     
     # Normalize the vector to unit length
-    normalized_vector = vector / np.linalg.norm(vector)
+    normalized_vector = normalize_vector(vector)
     
     # Check if vector already exists
     if identifier in updated_store["concepts"]:
@@ -393,484 +640,216 @@ def add_vector_to_store(store: StoreDict, identifier: str, vector: np.ndarray, m
     return updated_store
 
 
-def get_vector_from_store(store: StoreDict, identifier: str) -> Result:
+def process_entities_parallel(entities: List[EntityDict], rules: List[RuleDict],
+                            store: StoreDict, state: StateDict, config: ConfigDict) -> List[ResultDict]:
     """
-    Retrieve a vector and its metadata by identifier.
+    Process entities in parallel using a thread pool.
     
     Args:
-        store (dict): Vector store dictionary.
-        identifier (str): Unique identifier for the vector.
+        entities (list): List of entities to process
+        rules (list): List of rule representations
+        store (dict): Vector store for similarity search
+        state (dict): State dictionary for context
+        config (dict): Configuration options
         
     Returns:
-        Result: Success with vector dictionary or error message.
+        list: List of processing results for entities
     """
-    if identifier not in store["concepts"]:
-        return error(f"Vector with identifier '{identifier}' not found in the store")
+    # Extract max workers from config or use default
+    max_workers = config.get("max_workers", min(32, os.cpu_count() + 4))
     
-    concept = store["concepts"][identifier]
-    return success({
-        "identifier": identifier,
-        "vector": concept["vector"],
-        "metadata": concept["metadata"]
-    })
+    # Create a copy of store and state for each worker to avoid concurrency issues
+    entity_results = []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Create a partial function for each entity
+        futures = []
+        for entity in entities:
+            # Create a deep copy of store and state for each entity
+            entity_store = copy.deepcopy(store)
+            entity_state = copy.deepcopy(state)
+            
+            # Process entity with its own store and state
+            future = executor.submit(
+                process_entity,
+                entity=entity,
+                rules=rules,
+                store=entity_store,
+                state=entity_state,
+                config=config
+            )
+            futures.append(future)
+        
+        # Collect results as they complete
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                entity_results.append(result)
+            except Exception as e:
+                logger.error(f"Error in parallel processing: {str(e)}")
+                # Add error result
+                entity_results.append({
+                    "entity_id": "unknown",
+                    "entity_name": "unknown",
+                    "outcome": "ERROR",
+                    "certainty": 0.0,
+                    "error": str(e)
+                })
+    
+    return entity_results
 
 
-def create_state(session_id: str) -> StateDict:
+def process_pipeline(config: ConfigDict, verbose: bool = False) -> ResultDict:
     """
-    Create a new state for a session.
+    Process the entire Hyperlogica pipeline from input to output.
     
     Args:
-        session_id (str): Unique identifier for the session.
+        config (dict): Configuration dictionary
+        verbose (bool): Whether to print verbose progress information
         
     Returns:
-        dict: New state dictionary with standard structure.
+        dict: Results dictionary
     """
-    return {
-        "session_id": session_id,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "concepts": {},  # Maps concept identifiers to vectors and metadata
-        "relationships": {},  # Maps relationship identifiers to source, target, and metadata
-        "references": {},  # Maps reference identifiers to resolved entities
-        "metadata": {}  # Session-specific metadata
-    }
-
-
-def add_concept_to_state(state: StateDict, concept: Dict[str, Any]) -> StateDict:
-    """
-    Add a concept to the state.
+    start_time = time.time()
     
-    Args:
-        state (dict): Current state dictionary.
-        concept (dict): Concept to add to the state.
-        
-    Returns:
-        dict: Updated state dictionary with the new concept added.
-    """
-    # Create a copy of the state to avoid modifying the input
-    updated_state = copy.deepcopy(state)
-    
-    # Check required fields
-    if "identifier" not in concept:
-        logger.error("Missing required field 'identifier' in concept")
-        return updated_state
-    
-    identifier = concept["identifier"]
-    updated_state["concepts"][identifier] = {
-        "vector": concept.get("vector", None),
-        "metadata": concept.get("metadata", {}),
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    }
-    
-    logger.debug(f"Added concept to state: {identifier}")
-    return updated_state
-
-
-def add_relation_to_state(state: StateDict, relation: Dict[str, Any]) -> StateDict:
-    """
-    Add a relation to the state.
-    
-    Args:
-        state (dict): Current state dictionary.
-        relation (dict): Relation to add to the state.
-        
-    Returns:
-        dict: Updated state dictionary with the new relation added.
-    """
-    # Create a copy of the state to avoid modifying the input
-    updated_state = copy.deepcopy(state)
-    
-    # Check required fields
-    required_fields = ["identifier", "source", "target", "relation_type"]
-    for field in required_fields:
-        if field not in relation:
-            logger.error(f"Missing required field '{field}' in relation")
-            return updated_state
-    
-    # Check that source and target exist in the state
-    source_id = relation["source"]
-    target_id = relation["target"]
-    
-    if source_id not in updated_state["concepts"]:
-        logger.error(f"Source concept '{source_id}' not found in state")
-        return updated_state
-    
-    if target_id not in updated_state["concepts"]:
-        logger.error(f"Target concept '{target_id}' not found in state")
-        return updated_state
-    
-    identifier = relation["identifier"]
-    updated_state["relationships"][identifier] = {
-        "source": source_id,
-        "target": target_id,
-        "relation_type": relation["relation_type"],
-        "metadata": relation.get("metadata", {}),
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    }
-    
-    logger.debug(f"Added relation to state: {identifier}")
-    return updated_state
-
-
-def load_or_create_vector_store(config: Dict[str, Any]) -> StoreDict:
-    """
-    Load an existing vector store or create a new one.
-    
-    Args:
-        config (dict): Configuration dictionary containing processing options.
-        
-    Returns:
-        dict: Vector store dictionary, either loaded or newly created.
-    """
-    persistence_options = extract_persistence_options(config)
+    # Extract options
     processing_options = extract_processing_options(config)
-    
-    if persistence_options["load_previous_state"] and persistence_options["previous_state_path"]:
-        try:
-            # In a real implementation, we would load the vector store from disk
-            # For simplicity, we'll create a new one
-            logger.info(f"Would load vector store from {persistence_options['previous_state_path']}")
-            logger.info("Creating new vector store instead for this example")
-        except Exception as e:
-            logger.error(f"Failed to load vector store: {str(e)}")
-            logger.info("Creating new vector store instead")
-    
-    dimension = processing_options["vector_dimension"]
-    vector_type = processing_options["vector_type"]
-    index_type = "flat" if vector_type == "binary" else "hnsw"
-    
-    logger.info(f"Creating new vector store with dimension {dimension} and index type {index_type}")
-    return create_vector_store(dimension, index_type)
-
-
-def load_or_create_state(config: Dict[str, Any]) -> StateDict:
-    """
-    Load an existing state or create a new one.
-    
-    Args:
-        config (dict): Configuration dictionary containing persistence options.
-        
-    Returns:
-        dict: State dictionary, either loaded or newly created.
-    """
     persistence_options = extract_persistence_options(config)
+    llm_options = extract_llm_options(config)
+    logging_options = extract_logging_options(config)
+    output_schema = extract_output_schema(config)
     
-    if persistence_options["load_previous_state"] and persistence_options["previous_state_path"]:
-        try:
-            # In a real implementation, we would load the state from disk
-            # For simplicity, we'll create a new one
-            logger.info(f"Would load state from {persistence_options['previous_state_path']}")
-            logger.info("Creating new state instead for this example")
-        except Exception as e:
-            logger.error(f"Failed to load state: {str(e)}")
-            logger.info("Creating new state instead")
+    # Initialize vector store and state
+    vector_dim = processing_options.get("vector_dimension", 10000)
+    vector_store = create_vector_store(dimension=vector_dim)
+    state = create_state(f"session_{int(time.time())}")
     
-    # Generate a unique session ID
-    session_id = f"session_{int(time.time())}"
+    # Process rules
+    rules_data = config.get("input_data", {}).get("rules", [])
     
-    logger.info(f"Creating new state with session ID {session_id}")
-    return create_state(session_id)
-
-
-def simulate_llm_rule_conversion(rule_text: str, rule_certainty: float) -> Dict[str, Any]:
-    """
-    Simulate LLM conversion of rule text to ACEP representation.
-    In a real implementation, this would call an LLM API.
-    
-    Args:
-        rule_text (str): The rule text to convert.
-        rule_certainty (float): The certainty associated with the rule.
+    if verbose:
+        print(f"Processing {len(rules_data)} rules...")
         
-    Returns:
-        dict: Simulated ACEP representation of the rule.
-    """
-    # This is a simplistic simulation - a real implementation would parse the rule properly
-    rule_id = rule_text.lower().replace(" ", "_")[:50]
-    is_conditional = "if" in rule_text.lower() and "then" in rule_text.lower()
+    processed_rules, vector_store, state = process_rules(
+        rules_data, llm_options, vector_store, state, processing_options
+    )
     
-    if is_conditional:
-        parts = rule_text.lower().split("then")
-        antecedent = parts[0].replace("if", "").strip()
-        consequent = parts[1].strip().rstrip(".")
-        
-        # Create a vector from a hash of the rule text
-        text_hash = hash(rule_text) % (2**32)
-        np.random.seed(text_hash)
-        vector = np.random.normal(0, 1, 10000)
-        vector = vector / np.linalg.norm(vector)
-        
-        return {
-            "identifier": f"{consequent}_if_{antecedent}"[:50],
-            "vector": vector,
-            "metadata": {
-                "source": "rule",
-                "text": rule_text,
-                "certainty": rule_certainty,
-                "conditional": True,
-                "antecedent": antecedent,
-                "consequent": consequent
-            }
-        }
+    # Process entities
+    entities_data = config.get("input_data", {}).get("entities", [])
+    entity_count = len(entities_data)
+    
+    if verbose:
+        print(f"Processing {entity_count} entities...")
+    
+    # Choose between parallel or sequential processing
+    if processing_options.get("parallel_processing", True) and entity_count > 1:
+        entity_results = process_entities_parallel(
+            entities_data, processed_rules, vector_store, state, processing_options
+        )
     else:
-        # Non-conditional rule
-        text_hash = hash(rule_text) % (2**32)
-        np.random.seed(text_hash)
-        vector = np.random.normal(0, 1, 10000)
-        vector = vector / np.linalg.norm(vector)
-        
-        return {
-            "identifier": rule_id,
-            "vector": vector,
-            "metadata": {
-                "source": "rule",
-                "text": rule_text,
-                "certainty": rule_certainty,
-                "conditional": False
-            }
-        }
-
-
-def simulate_llm_fact_conversion(fact_text: str, fact_certainty: float, entity_id: str) -> Dict[str, Any]:
-    """
-    Simulate LLM conversion of fact text to ACEP representation.
-    In a real implementation, this would call an LLM API.
+        entity_results = []
+        for entity in entities_data:
+            result = process_entity(
+                entity, processed_rules, vector_store, state, processing_options
+            )
+            entity_results.append(result)
     
-    Args:
-        fact_text (str): The fact text to convert.
-        fact_certainty (float): The certainty associated with the fact.
-        entity_id (str): The ID of the entity the fact is about.
-        
-    Returns:
-        dict: Simulated ACEP representation of the fact.
-    """
-    # This is a simplistic simulation - a real implementation would parse the fact properly
-    fact_id = f"{entity_id}_{fact_text.lower().replace(' ', '_')[:30]}"
+    # Save state if requested
+    if persistence_options.get("save_state", False):
+        state_path = persistence_options.get("state_save_path", "./state.pkl")
+        try:
+            save_state(state, state_path)
+            if verbose:
+                print(f"State saved to {state_path}")
+        except Exception as e:
+            logger.error(f"Failed to save state: {str(e)}")
     
-    # Extract a simulated assessment and metric type
-    assessment = "unknown"
-    metric_type = "unknown"
+    # Calculate processing time
+    processing_time = time.time() - start_time
     
-    if "high" in fact_text.lower():
-        assessment = "high"
-    elif "low" in fact_text.lower():
-        assessment = "low"
-    elif "increasing" in fact_text.lower() or "growing" in fact_text.lower():
-        assessment = "positive"
-    elif "decreasing" in fact_text.lower() or "declining" in fact_text.lower():
-        assessment = "negative"
+    # Compile results
+    conclusions_count = sum(
+        len(result.get("reasoning", {}).get("conclusions", []))
+        for result in entity_results
+        if "reasoning" in result
+    )
     
-    if "p/e" in fact_text.lower() or "price to earnings" in fact_text.lower():
-        metric_type = "pe_ratio"
-    elif "revenue" in fact_text.lower():
-        metric_type = "revenue_growth"
-    elif "profit margin" in fact_text.lower():
-        metric_type = "profit_margin"
-    elif "debt" in fact_text.lower():
-        metric_type = "debt_to_equity"
-    elif "return on equity" in fact_text.lower() or "roe" in fact_text.lower():
-        metric_type = "return_on_equity"
-    elif "price" in fact_text.lower() and ("movement" in fact_text.lower() or "trend" in fact_text.lower()):
-        metric_type = "price_movement"
-    elif "analyst" in fact_text.lower():
-        metric_type = "analyst_sentiment"
-    
-    # Create a vector from a hash of the fact text
-    text_hash = hash(fact_text) % (2**32)
-    np.random.seed(text_hash)
-    vector = np.random.normal(0, 1, 10000)
-    vector = vector / np.linalg.norm(vector)
-    
-    return {
-        "identifier": f"{entity_id}_{metric_type}_{assessment}",
-        "vector": vector,
+    final_results = {
+        "entities_processed": entity_count,
+        "conclusions_generated": conclusions_count,
+        "processing_time": processing_time,
+        "results": entity_results,
         "metadata": {
-            "source": "fact",
-            "text": fact_text,
-            "certainty": fact_certainty,
-            "entity_id": entity_id,
-            "assessment": assessment,
-            "metric_type": metric_type
+            "timestamp": datetime.now().isoformat(),
+            "reasoning_approach": processing_options.get("reasoning_approach", "vector_weighted"),
+            "vector_dimension": vector_dim
         }
     }
+    
+    if verbose:
+        print(f"Processing completed in {processing_time:.2f} seconds")
+        print(f"Processed {entity_count} entities with {conclusions_count} conclusions")
+    
+    return final_results
 
 
-def process_rules(rules: List[Dict[str, Any]], store: StoreDict, state: StateDict, config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], StoreDict, StateDict]:
+def run_pipeline_from_file(file_path: str, output_path: Optional[str] = None, verbose: bool = False) -> ResultDict:
     """
-    Process rules and add them to the store and state.
+    Run the Hyperlogica pipeline from a configuration file.
     
     Args:
-        rules (list): List of rule dictionaries from the input configuration.
-        store (dict): Vector store where rule vectors will be stored.
-        state (dict): State dictionary where rule representations will be added.
-        config (dict): Processing configuration options.
+        file_path (str): Path to the configuration file
+        output_path (str, optional): Path to save the results. Defaults to None.
+        verbose (bool, optional): Whether to print verbose progress information. Defaults to False.
         
     Returns:
-        tuple: (processed_rules, updated_store, updated_state)
+        dict: Results dictionary
+        
+    Raises:
+        ValueError: If the configuration file is invalid
     """
-    processed_rules = []
-    updated_store = copy.deepcopy(store)
-    updated_state = copy.deepcopy(state)
+    # Parse and validate configuration
+    config_result = parse_input_config(file_path)
     
-    for rule in rules:
-        rule_text = rule.get("text", "")
-        rule_certainty = rule.get("certainty", 0.9)
-        
-        if not rule_text:
-            logger.warning("Skipping rule with empty text")
-            continue
-        
-        # In a real implementation, this would call an LLM API
-        # For simplicity, we'll use a simulated conversion
-        acep_representation = simulate_llm_rule_conversion(rule_text, rule_certainty)
-        
-        # Add to vector store
-        updated_store = add_vector_to_store(
-            updated_store,
-            acep_representation["identifier"],
-            acep_representation["vector"],
-            acep_representation["metadata"]
-        )
-        
-        # Add to state
-        updated_state = add_concept_to_state(updated_state, acep_representation)
-        
-        # Add to processed rules
-        processed_rules.append(acep_representation)
-        
-        logger.info(f"Processed rule: {rule_text[:50]}...")
+    if is_error(config_result):
+        raise ValueError(f"Error loading configuration: {get_error(config_result)}")
     
-    return processed_rules, updated_store, updated_state
-
-
-def process_facts(entity: Dict[str, Any], store: StoreDict, state: StateDict, config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], StoreDict, StateDict]:
-    """
-    Process facts for an entity and add them to the store and state.
+    config = get_value(config_result)
     
-    Args:
-        entity (dict): Entity dictionary from the input configuration.
-        store (dict): Vector store where fact vectors will be stored.
-        state (dict): State dictionary where fact representations will be added.
-        config (dict): Processing configuration options.
-        
-    Returns:
-        tuple: (processed_facts, updated_store, updated_state)
-    """
-    processed_facts = []
-    updated_store = copy.deepcopy(store)
-    updated_state = copy.deepcopy(state)
+    # Validate configuration
+    validated_result = validate_config(config)
     
-    entity_id = entity.get("id", "")
-    facts = entity.get("facts", [])
+    if is_error(validated_result):
+        raise ValueError(f"Invalid configuration: {get_error(validated_result)}")
     
-    if not entity_id:
-        logger.warning("Skipping entity with empty ID")
-        return processed_facts, updated_store, updated_state
+    validated_config = get_value(validated_result)
     
-    if not facts:
-        logger.warning(f"No facts for entity {entity_id}")
-        return processed_facts, updated_store, updated_state
+    # Run the pipeline
+    results = process_pipeline(validated_config, verbose)
     
-    for fact in facts:
-        fact_text = fact.get("text", "")
-        fact_certainty = fact.get("certainty", 0.9)
-        
-        if not fact_text:
-            logger.warning(f"Skipping empty fact for entity {entity_id}")
-            continue
-        
-        # In a real implementation, this would call an LLM API
-        # For simplicity, we'll use a simulated conversion
-        acep_representation = simulate_llm_fact_conversion(fact_text, fact_certainty, entity_id)
-        
-        # Add to vector store
-        updated_store = add_vector_to_store(
-            updated_store,
-            acep_representation["identifier"],
-            acep_representation["vector"],
-            acep_representation["metadata"]
-        )
-        
-        # Add to state
-        updated_state = add_concept_to_state(updated_state, acep_representation)
-        
-        # Add to processed facts
-        processed_facts.append(acep_representation)
-        
-        logger.info(f"Processed fact for entity {entity_id}: {fact_text[:50]}...")
+    # Save results if output path is provided
+    if output_path:
+        try:
+            # Handle numpy arrays for JSON serialization
+            def numpy_converter(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.floating):
+                    return float(obj)
+                raise TypeError(f"Unserializable object: {type(obj)}")
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, default=numpy_converter, indent=2)
+                
+            if verbose:
+                print(f"Results saved to {output_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to save results: {str(e)}")
     
-    return processed_facts, updated_store, updated_state
-
-
-def is_conditional(rule: Dict[str, Any]) -> bool:
-    """Check if a rule is conditional."""
-    return rule.get("metadata", {}).get("conditional", False)
-
-
-def extract_antecedent(rule: Dict[str, Any]) -> str:
-    """Extract the antecedent from a conditional rule."""
-    return rule.get("metadata", {}).get("antecedent", "")
-
-
-def matches(fact: Dict[str, Any], antecedent: str, store: StoreDict) -> bool:
-    """
-    Check if a fact matches a rule's antecedent.
-    
-    In a real implementation, this would use vector similarity or more sophisticated matching,
-    leveraging the hyperdimensional computing capabilities of the system.
-    For simplicity, we'll use simple string matching in this example.
-    
-    Args:
-        fact (dict): Fact representation.
-        antecedent (str): Antecedent of the rule.
-        store (dict): Vector store for similarity comparisons.
-        
-    Returns:
-        bool: True if the fact matches the antecedent, False otherwise.
-    """
-    # Get fact metadata
-    assessment = fact.get("metadata", {}).get("assessment", "").lower()
-    metric_type = fact.get("metadata", {}).get("metric_type", "").lower()
-    
-    # Do simple string matching
-    if not antecedent or not metric_type:
-        return False
-    
-    # Check if the metric type is mentioned in the antecedent
-    metric_match = False
-    if "pe ratio" in antecedent and metric_type == "pe_ratio":
-        metric_match = True
-    elif "revenue growth" in antecedent and metric_type == "revenue_growth":
-        metric_match = True
-    elif "profit margin" in antecedent and metric_type == "profit_margin":
-        metric_match = True
-    elif "debt" in antecedent and metric_type == "debt_to_equity":
-        metric_match = True
-    elif "return on equity" in antecedent and metric_type == "return_on_equity":
-        metric_match = True
-    elif "price movement" in antecedent and metric_type == "price_movement":
-        metric_match = True
-    elif "analyst" in antecedent and metric_type == "analyst_sentiment":
-        metric_match = True
-    
-    # If metric type matches, check if assessment matches
-    if metric_match:
-        if "high" in antecedent and assessment == "high":
-            return True
-        elif "low" in antecedent and assessment == "low":
-            return True
-        elif "positive" in antecedent and assessment == "positive":
-            return True
-        elif "negative" in antecedent and assessment == "negative":
-            return True
-        elif "moderate" in antecedent and assessment == "moderate":
-            return True
-    
-    # Special case for derived concepts like "undervalued"
-    derived_concepts = ["undervalued", "overvalued", "strong growth", "weak growth",
-                        "financially healthy", "financially weak", "positive momentum",
-                        "negative momentum"]
-    
-    for concept in derived_concepts:
-        if concept in antecedent and concept in fact.get("identifier", "").lower():
-            return True
-    
-    return False
+    return results

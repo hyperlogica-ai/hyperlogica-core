@@ -6,7 +6,7 @@ All functions are implemented in a pure functional style with no side effects or
 """
 
 import numpy as np
-from typing import List, Union, Optional, Tuple, Dict, Any
+from typing import List, Union, Optional, Tuple, Dict, Any, Callable
 import hashlib
 from scipy import signal
 import faiss
@@ -48,10 +48,10 @@ def generate_vector(text: str, dimension: int = 10000, vector_type: str = "binar
     # Generate the vector based on vector type
     if vector_type == "binary":
         # Generate binary vector (0s and 1s)
-        vector = np.random.randint(0, 2, dimension)
+        vector = np.random.randint(0, 2, dimension).astype(np.int8)
     elif vector_type == "bipolar":
         # Generate bipolar vector (-1s and 1s)
-        vector = 2 * np.random.randint(0, 2, dimension) - 1
+        vector = (2 * np.random.randint(0, 2, dimension) - 1).astype(np.int8)
     else:  # continuous
         # Generate continuous vector from normal distribution
         vector = np.random.normal(0, 1, dimension)
@@ -82,13 +82,18 @@ def normalize_vector(vector: np.ndarray) -> np.ndarray:
 def bind_vectors(vector_a: np.ndarray, vector_b: np.ndarray, method: str = "auto") -> np.ndarray:
     """
     Bind two vectors using specified method to create a new associated vector.
+    According to ACEP specification, binding combines vectors to represent their association,
+    with the result being dissimilar to the inputs but containing their combined information.
     
     Args:
         vector_a (np.ndarray): First input vector.
         vector_b (np.ndarray): Second input vector.
-        method (str, optional): Binding method to use. Options are "xor" for binary vectors,
-                                "multiply" for bipolar vectors, "convolution" for continuous 
-                                vectors, or "auto" to infer the best method. Defaults to "auto".
+        method (str, optional): Binding method to use. Options are:
+                                - "xor" for binary vectors (element-wise XOR)
+                                - "multiply" for bipolar vectors (element-wise multiplication)
+                                - "convolution" for continuous vectors (circular convolution)
+                                - "auto" to infer the best method based on vector properties
+                                Defaults to "auto".
         
     Returns:
         np.ndarray: A new vector representing the binding of the input vectors.
@@ -112,12 +117,13 @@ def bind_vectors(vector_a: np.ndarray, vector_b: np.ndarray, method: str = "auto
     # Perform binding based on method
     if method == "xor":
         # XOR binding for binary vectors
-        result = np.logical_xor(vector_a.astype(bool), vector_b.astype(bool)).astype(int)
+        result = np.logical_xor(vector_a.astype(bool), vector_b.astype(bool)).astype(np.int8)
     elif method == "multiply":
         # Element-wise multiplication for bipolar vectors
         result = vector_a * vector_b
     elif method == "convolution":
-        # Circular convolution for continuous vectors
+        # Circular convolution for continuous vectors using FFT for efficiency
+        # FFT(a) * FFT(b) = FFT(a ⊛ b) where ⊛ is circular convolution
         result = np.real(np.fft.ifft(np.fft.fft(vector_a) * np.fft.fft(vector_b)))
         # Normalize the result
         result = normalize_vector(result)
@@ -129,13 +135,14 @@ def bind_vectors(vector_a: np.ndarray, vector_b: np.ndarray, method: str = "auto
 def unbind_vectors(bound_vector: np.ndarray, vector_a: np.ndarray, method: str = "auto") -> np.ndarray:
     """
     Unbind to recover vector_b from bound_vector and vector_a.
+    If bound_vector = bind(vector_a, vector_b), then vector_b ≈ unbind(bound_vector, vector_a)
     
     Args:
         bound_vector (np.ndarray): The bound vector resulting from binding vector_a and vector_b.
         vector_a (np.ndarray): One of the original vectors used in the binding operation.
         method (str, optional): Unbinding method to use, matching the method used for binding.
                                 Options are "xor" for binary vectors, "multiply" for bipolar vectors,
-                                "convolution" for continuous vectors, or "auto" to infer the best method.
+                                "deconvolution" for continuous vectors, or "auto" to infer the best method.
                                 Defaults to "auto".
         
     Returns:
@@ -155,74 +162,84 @@ def unbind_vectors(bound_vector: np.ndarray, vector_a: np.ndarray, method: str =
         elif np.all(np.logical_or(bound_vector == -1, bound_vector == 1)) and np.all(np.logical_or(vector_a == -1, vector_a == 1)):
             method = "multiply"  # Bipolar vectors
         else:
-            method = "convolution"  # Continuous vectors
+            method = "deconvolution"  # Continuous vectors
     
     # Perform unbinding based on method
     if method == "xor":
         # XOR unbinding for binary vectors (XOR is its own inverse operation)
-        result = np.logical_xor(bound_vector.astype(bool), vector_a.astype(bool)).astype(int)
+        result = np.logical_xor(bound_vector.astype(bool), vector_a.astype(bool)).astype(np.int8)
     elif method == "multiply":
         # Element-wise multiplication for bipolar vectors (with bipolar, multiply is its own inverse)
         result = bound_vector * vector_a
-    elif method == "convolution":
-        # Approximate inverse of circular convolution for continuous vectors
-        # Division in the frequency domain is equivalent to deconvolution
+    elif method == "deconvolution":
+        # Approximate inverse of circular convolution for continuous vectors using FFT
         fft_bound = np.fft.fft(bound_vector)
         fft_a = np.fft.fft(vector_a)
         # Add small epsilon to avoid division by zero
         epsilon = 1e-10
+        # Element-wise division in frequency domain is equivalent to deconvolution
         result = np.real(np.fft.ifft(fft_bound / (fft_a + epsilon)))
         # Normalize the result
         result = normalize_vector(result)
     else:
-        raise ValueError(f"Unsupported unbinding method: {method}. Use 'xor', 'multiply', 'convolution', or 'auto'.")
+        raise ValueError(f"Unsupported unbinding method: {method}. Use 'xor', 'multiply', 'deconvolution', or 'auto'.")
     
     return result
 
-def bundle_vectors(vector_list: List[np.ndarray], weights: Optional[List[float]] = None) -> np.ndarray:
+def bundle_vectors(vectors: List[np.ndarray], weights: Optional[List[float]] = None) -> np.ndarray:
     """
-    Bundle multiple vectors with optional weighting to create a superposition.
+    Bundle multiple vectors to create a superposition that represents a combination.
+    According to ACEP, bundling combines vectors so the result is similar to all components.
     
     Args:
-        vector_list (list): List of np.ndarray vectors to bundle together.
-        weights (list, optional): List of weights to apply to each vector. 
-                                  If None, equal weights are used. Defaults to None.
+        vectors (List[np.ndarray]): List of vectors to bundle.
+        weights (List[float], optional): Weight for each vector. If None, equal weights are used.
+                                        Defaults to None.
         
     Returns:
-        np.ndarray: A normalized vector representing the weighted combination of input vectors.
+        np.ndarray: Bundled vector representing the weighted combination.
         
     Raises:
-        ValueError: If vector_list is empty, vectors have different dimensions,
-                    or weights don't match the number of vectors.
+        ValueError: If vectors is empty, vectors have different dimensions,
+                   or weights don't match the number of vectors.
     """
-    if not vector_list:
+    if not vectors:
         raise ValueError("Cannot bundle an empty list of vectors")
     
     # Check that all vectors have the same shape
-    first_shape = vector_list[0].shape
-    if not all(v.shape == first_shape for v in vector_list):
+    first_shape = vectors[0].shape
+    if not all(v.shape == first_shape for v in vectors):
         raise ValueError("All vectors must have the same shape")
     
     # Handle weights
     if weights is None:
         # Equal weighting
-        weights = [1.0 / len(vector_list)] * len(vector_list)
-    elif len(weights) != len(vector_list):
-        raise ValueError(f"Number of weights ({len(weights)}) must match number of vectors ({len(vector_list)})")
+        weights = [1.0 / len(vectors)] * len(vectors)
+    elif len(weights) != len(vectors):
+        raise ValueError(f"Number of weights ({len(weights)}) must match number of vectors ({len(vectors)})")
+    
+    # Determine vector type based on first vector
+    if np.all(np.logical_or(vectors[0] == 0, vectors[0] == 1)):
+        vector_type = "binary"
+    elif np.all(np.logical_or(vectors[0] == -1, vectors[0] == 1)):
+        vector_type = "bipolar"
+    else:
+        vector_type = "continuous"
     
     # Combine vectors using weighted sum
-    result = np.zeros_like(vector_list[0], dtype=float)
-    for vector, weight in zip(vector_list, weights):
+    result = np.zeros_like(vectors[0], dtype=float)
+    for vector, weight in zip(vectors, weights):
         result += weight * vector.astype(float)
     
-    # For binary vectors, threshold the result
-    if np.all(np.logical_or(vector_list[0] == 0, vector_list[0] == 1)):
-        result = (result > 0.5).astype(int)
-    # For bipolar vectors, take the sign
-    elif np.all(np.logical_or(vector_list[0] == -1, vector_list[0] == 1)):
-        result = np.sign(result).astype(int)
+    # Process the result based on vector type
+    if vector_type == "binary":
+        # Threshold for binary vectors: values > 0.5 become 1, others 0
+        result = (result > 0.5).astype(np.int8)
+    elif vector_type == "bipolar":
+        # Sign function for bipolar vectors: positive values become 1, others -1
+        result = np.sign(result).astype(np.int8)
     else:
-        # For continuous vectors, normalize
+        # Normalize continuous vectors
         result = normalize_vector(result)
     
     return result
@@ -230,9 +247,10 @@ def bundle_vectors(vector_list: List[np.ndarray], weights: Optional[List[float]]
 def permute_vector(vector: np.ndarray, shift: int) -> np.ndarray:
     """
     Apply cyclic shift to vector for encoding order information.
+    In ACEP, permutation reorders vector elements to represent sequential information.
     
     Args:
-        vector (np.ndarray): Vector to be permuted.
+        vector (np.ndarray): Vector to permute.
         shift (int): Number of positions to shift elements. Positive values shift right,
                      negative values shift left.
         
@@ -240,9 +258,46 @@ def permute_vector(vector: np.ndarray, shift: int) -> np.ndarray:
         np.ndarray: Permuted vector with elements cyclically shifted.
     """
     # Ensure shift is within valid range
-    shift = shift % len(vector)
+    shift = shift % vector.shape[0]
+    
     # Perform cyclic shift
     return np.roll(vector, shift)
+
+def random_permutation(vector: np.ndarray, seed: Optional[int] = None) -> np.ndarray:
+    """
+    Apply a random but reproducible permutation to a vector.
+    This is useful for creating dissimilar but related vectors.
+    
+    Args:
+        vector (np.ndarray): Vector to permute.
+        seed (int, optional): Random seed for reproducible permutation.
+                             If None, a random permutation is generated. Defaults to None.
+        
+    Returns:
+        np.ndarray: Randomly permuted vector.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    
+    # Generate permutation indices
+    indices = np.random.permutation(vector.shape[0])
+    
+    # Apply permutation
+    return vector[indices]
+
+def inverse_permutation(permuted_vector: np.ndarray, shift: int) -> np.ndarray:
+    """
+    Inverse of cyclic shift permutation.
+    
+    Args:
+        permuted_vector (np.ndarray): Permuted vector.
+        shift (int): The original shift value used for permutation.
+        
+    Returns:
+        np.ndarray: Recovered original vector.
+    """
+    # Apply inverse shift (negative of original shift)
+    return np.roll(permuted_vector, -shift % permuted_vector.shape[0])
 
 def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str = "auto") -> float:
     """
@@ -251,9 +306,11 @@ def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str
     Args:
         vector_a (np.ndarray): First vector.
         vector_b (np.ndarray): Second vector.
-        method (str, optional): Similarity calculation method. Options are "cosine" for 
-                                continuous vectors, "hamming" for binary vectors, "dot" for
-                                bipolar vectors, or "auto" to infer the best method.
+        method (str, optional): Similarity calculation method:
+                                - "cosine" for continuous vectors
+                                - "hamming" for binary vectors
+                                - "dot" for bipolar vectors
+                                - "auto" to infer the best method
                                 Defaults to "auto".
         
     Returns:
@@ -285,7 +342,7 @@ def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str
             return 0.0  # Handle zero vectors
         
         cos_sim = np.dot(vector_a, vector_b) / (norm_a * norm_b)
-        # Ensure the result is in [-1, 1] range
+        # Ensure the result is in [-1, 1] range (numerical stability)
         cos_sim = max(-1.0, min(1.0, cos_sim))
         # Map from [-1, 1] to [0, 1]
         return (cos_sim + 1) / 2
@@ -293,97 +350,156 @@ def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str
     elif method == "hamming":
         # Hamming similarity for binary vectors (1 - normalized Hamming distance)
         hamming_distance = np.sum(vector_a != vector_b)
-        return 1 - (hamming_distance / len(vector_a))
+        return 1 - (hamming_distance / vector_a.shape[0])
     
     elif method == "dot":
         # Normalized dot product for bipolar vectors
-        dot_product = np.dot(vector_a, vector_b) / len(vector_a)
+        dot_product = np.dot(vector_a, vector_b) / vector_a.shape[0]
         # Map from [-1, 1] to [0, 1]
         return (dot_product + 1) / 2
     
     else:
         raise ValueError(f"Unsupported similarity method: {method}. Use 'cosine', 'hamming', 'dot', or 'auto'.")
 
-def create_hd_index(dimension: int, index_type: str = "flat") -> Any:
+def generate_associative_memory(keys: List[np.ndarray], values: List[np.ndarray], method: str = "auto") -> np.ndarray:
     """
-    Create a FAISS index for efficient similarity search in high-dimensional space.
+    Generate a Holographic Reduced Representation (HRR) associative memory.
+    This creates a single vector that encodes multiple key-value pairs.
     
     Args:
-        dimension (int): Dimensionality of vectors to be indexed.
-        index_type (str, optional): Type of FAISS index to create. Options include "flat" for 
-                                    exact search, "ivf" for inverted file, or "hnsw" for 
-                                    hierarchical navigable small world graph. Defaults to "flat".
+        keys (List[np.ndarray]): List of key vectors.
+        values (List[np.ndarray]): List of value vectors (same length as keys).
+        method (str, optional): Binding method to use. Defaults to "auto".
         
     Returns:
-        Any: A FAISS index configured for the specified dimension and type.
+        np.ndarray: Single vector representing associative memory of all key-value pairs.
         
     Raises:
-        ValueError: If dimension is not positive or index_type is not supported.
+        ValueError: If keys and values have different lengths or incompatible dimensions.
     """
-    if dimension <= 0:
-        raise ValueError("Dimension must be a positive integer")
+    if len(keys) != len(values):
+        raise ValueError(f"Number of keys ({len(keys)}) must match number of values ({len(values)})")
     
-    if index_type == "flat":
-        # Flat index for exact search (cosine similarity)
-        index = faiss.IndexFlatIP(dimension)  # Inner product for normalized vectors
-    elif index_type == "ivf":
-        # IVF index for approximate search with inverted file
-        quantizer = faiss.IndexFlatIP(dimension)
-        index = faiss.IndexIVFFlat(quantizer, dimension, int(np.sqrt(dimension)), faiss.METRIC_INNER_PRODUCT)
-        # Need to train this index before use
-    elif index_type == "hnsw":
-        # HNSW index for efficient approximate search
-        index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
-    else:
-        raise ValueError(f"Unsupported index type: {index_type}. Use 'flat', 'ivf', or 'hnsw'.")
+    if not keys:
+        raise ValueError("Cannot create associative memory from empty lists")
     
-    return index
+    # Create pairs by binding each key with its corresponding value
+    pairs = [bind_vectors(key, value, method) for key, value in zip(keys, values)]
+    
+    # Bundle all pairs together
+    memory = bundle_vectors(pairs)
+    
+    return memory
 
-def find_similar_vectors(index: Any, vectors: Dict[str, np.ndarray], query_vector: np.ndarray, top_n: int = 10) -> List[Tuple[str, float]]:
+def query_associative_memory(memory: np.ndarray, query_key: np.ndarray, method: str = "auto") -> np.ndarray:
     """
-    Find the most similar vectors to the query vector using a FAISS index.
+    Query a Holographic Reduced Representation (HRR) associative memory.
+    Retrieves the value associated with the query key from the memory.
     
     Args:
-        index (Any): FAISS index containing vectors.
-        vectors (Dict[str, np.ndarray]): Dictionary mapping identifiers to vectors.
-        query_vector (np.ndarray): Vector to compare against the index.
-        top_n (int, optional): Number of most similar vectors to return. Defaults to 10.
+        memory (np.ndarray): Associative memory vector.
+        query_key (np.ndarray): Key to lookup in the memory.
+        method (str, optional): Binding method that was used to create the memory.
+                               Defaults to "auto".
         
     Returns:
-        List[Tuple[str, float]]: List of tuples containing identifier and similarity score,
-                                sorted by decreasing similarity.
+        np.ndarray: Retrieved value vector (approximate).
+    """
+    # Unbind the query key from the memory to get the associated value
+    retrieved_value = unbind_vectors(memory, query_key, method)
+    
+    return retrieved_value
+
+def create_semantic_pointer(concept: str, dimension: int = 10000, vector_type: str = "continuous") -> np.ndarray:
+    """
+    Create a semantic pointer vector for a concept, as used in Vector Symbolic Architectures.
+    
+    Args:
+        concept (str): Concept to represent as a semantic pointer.
+        dimension (int, optional): Dimensionality of the vector. Defaults to 10000.
+        vector_type (str, optional): Type of vector to generate. Defaults to "continuous".
+        
+    Returns:
+        np.ndarray: Semantic pointer vector for the concept.
+    """
+    return generate_vector(concept, dimension, vector_type)
+
+def bind_role_filler(role: np.ndarray, filler: np.ndarray, method: str = "auto") -> np.ndarray:
+    """
+    Bind a role vector with a filler vector to create a role-filler pair.
+    This is a common operation in Vector Symbolic Architectures for structured representations.
+    
+    Args:
+        role (np.ndarray): Role vector (e.g., "subject", "object").
+        filler (np.ndarray): Filler vector (e.g., "dog", "ball").
+        method (str, optional): Binding method to use. Defaults to "auto".
+        
+    Returns:
+        np.ndarray: Bound role-filler pair.
+    """
+    return bind_vectors(role, filler, method)
+
+def create_sequence_vector(vectors: List[np.ndarray], shifts: Optional[List[int]] = None) -> np.ndarray:
+    """
+    Create a sequence representation by applying different permutations to each vector.
+    
+    Args:
+        vectors (List[np.ndarray]): List of vectors to include in the sequence.
+        shifts (List[int], optional): List of shift values for each position.
+                                     If None, consecutive shifts are used. Defaults to None.
+        
+    Returns:
+        np.ndarray: Vector representing the sequence.
         
     Raises:
-        ValueError: If query_vector dimension doesn't match the index dimension.
+        ValueError: If vectors is empty.
     """
     if not vectors:
-        return []
+        raise ValueError("Cannot create sequence from empty list")
     
-    # Normalize query vector
-    query_vector = normalize_vector(query_vector.astype(np.float32))
+    # Create default shifts if not provided
+    if shifts is None:
+        shifts = list(range(len(vectors)))
     
-    # Reshape query vector to match FAISS expectations
-    query_vector = query_vector.reshape(1, -1)
+    # Apply permutation to each vector based on its position
+    permuted_vectors = [permute_vector(v, s) for v, s in zip(vectors, shifts)]
     
-    # Get vector identifiers as list to maintain order
-    identifiers = list(vectors.keys())
+    # Bundle all permuted vectors
+    sequence = bundle_vectors(permuted_vectors)
     
-    # Convert vectors to numpy array for FAISS
-    vector_array = np.vstack([normalize_vector(vectors[id].astype(np.float32)) for id in identifiers])
+    return sequence
+
+def cleanse_vector(vector: np.ndarray, vector_type: str = "auto") -> np.ndarray:
+    """
+    Cleanse a vector by removing noise and ensuring it conforms to its expected type.
+    Useful when vectors have been retrieved from associative memory or after multiple operations.
     
-    # Check if index is empty and needs to be populated
-    if index.ntotal == 0:
-        index.add(vector_array)
+    Args:
+        vector (np.ndarray): Vector to cleanse.
+        vector_type (str, optional): Target vector type. If "auto", infer from vector.
+                                    Defaults to "auto".
+        
+    Returns:
+        np.ndarray: Cleansed vector.
+    """
+    # Infer vector type if auto
+    if vector_type == "auto":
+        # Check if mostly binary (0s and 1s)
+        zeros_and_ones = np.isclose(vector, 0) | np.isclose(vector, 1)
+        if np.mean(zeros_and_ones) > 0.9:
+            vector_type = "binary"
+            # Check if mostly bipolar (-1s and 1s)
+            neg_ones_and_ones = np.isclose(vector, -1) | np.isclose(vector, 1)
+        elif np.mean(neg_ones_and_ones) > 0.9:
+            vector_type = "bipolar"
+        else:
+            vector_type = "continuous"
     
-    # Perform search
-    scores, indices = index.search(query_vector, min(top_n, len(vectors)))
+    # Apply cleansing based on vector type
+    if vector_type == "binary":
+        return (vector > 0.5).astype(np.int8)
+    elif vector_type == "bipolar":
+        return np.sign(vector).astype(np.int8)
+    else:  # continuous
+        return normalize_vector(vector)
     
-    # Map indices back to original identifiers and format results
-    results = []
-    for i, score in zip(indices[0], scores[0]):
-        if i >= 0:  # FAISS may return -1 if not enough results
-            # Adjust score from inner product to similarity in [0, 1]
-            similarity = (score + 1) / 2
-            results.append((identifiers[i], similarity))
-    
-    return results
