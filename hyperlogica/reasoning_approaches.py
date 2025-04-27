@@ -442,7 +442,12 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
     negative_outcome = domain_config.get("negative_outcome", "SELL")
     neutral_outcome = domain_config.get("neutral_outcome", "HOLD")
     
-    # Lower similarity threshold
+    # Get entity ID from facts if available
+    entity_id = None
+    if facts and len(facts) > 0 and 'attributes' in facts[0]:
+        entity_id = facts[0]['attributes'].get('entity_id')
+    
+    # Similarity threshold
     similarity_threshold = config.get("similarity_threshold", 0.5)
     logging.info(f"Using similarity threshold: {similarity_threshold}")
     
@@ -450,6 +455,9 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
     negative_evidence = 0.0
     neutral_evidence = 0.0
     conclusions = []
+    
+    # Track visited combinations to avoid duplicates
+    visited_combinations = set()
     
     # Process rules and facts with weighting and vector similarity
     for rule in rules:
@@ -492,6 +500,14 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
             # Check each fact for similarity to this rule's antecedent
             for fact in facts:
                 fact_id = fact.get('identifier', 'unknown')
+                
+                # Skip if we've already processed this rule-fact combination
+                combination_key = f"{rule_id}_{fact_id}"
+                if combination_key in visited_combinations:
+                    continue
+                
+                visited_combinations.add(combination_key)
+                
                 if 'vector' not in fact:
                     logging.warning(f"Fact missing vector: {fact_id}")
                     continue
@@ -521,16 +537,24 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
                     if not consequent:
                         consequent = "Derived conclusion from rule"
                     
+                    # Format conclusion ID to ensure it's unique and descriptive
+                    conclusion_id = f"conclusion_{entity_id}_{len(conclusions)+1}"
+                    
                     conclusion = {
-                        "identifier": f"conclusion_{len(conclusions)+1}",
+                        "identifier": conclusion_id,
+                        "type": "concept",  # Added type for proper ACEP representation
                         "source_rule": rule_id,
                         "source_fact": fact_id,
                         "text": consequent,
                         "similarity": similarity,
                         "attributes": {
+                            "rule_text": rule_text,
+                            "fact_text": fact_text,
+                            "entity_id": entity_id,
                             "certainty": min(rule.get('attributes', {}).get('certainty', 0.8), 
                                          fact.get('attributes', {}).get('certainty', 0.8)) * similarity
-                        }
+                        },
+                        "vector": rule.get('vector')  # Include vector for state storage
                     }
                     
                     conclusions.append(conclusion)
@@ -594,6 +618,7 @@ def weighted_approach(rules: list, facts: list, store: dict, state: dict, config
         "outcome": outcome,
         "certainty": certainty,
         "conclusions": conclusions,
+        "entity_id": entity_id,  # Add entity_id to the result
         "evidence_weights": {
             "positive": positive_evidence,
             "negative": negative_evidence,

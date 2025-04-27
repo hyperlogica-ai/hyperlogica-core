@@ -487,11 +487,21 @@ def apply_reasoning(rules: List[Dict[str, Any]],
     logging.info(f"Applying reasoning approach: {approach}")
     
     # Filter facts to only include those relevant to the current entity if needed
-    entity_id = facts[0]["attributes"]["entity_id"] if facts else None
+    entity_id = facts[0]["attributes"]["entity_id"] if facts and len(facts) > 0 and "attributes" in facts[0] else None
     
     # Apply the selected reasoning approach
     try:
         result = apply_reasoning_approach(approach, rules, facts, store, state, config)
+        
+        # Store all generated conclusions in the state
+        from state_management import add_conclusion_to_state  # Import here to avoid circular imports
+        
+        for conclusion in result.get("conclusions", []):
+            try:
+                # Add each conclusion to state
+                add_conclusion_to_state(state, conclusion)
+            except Exception as e:
+                logging.warning(f"Error adding conclusion to state: {str(e)}")
         
         # Apply recalibration if enabled
         if config.get("recalibration_enabled", False):
@@ -508,6 +518,24 @@ def apply_reasoning(rules: List[Dict[str, Any]],
             result["original_certainty"] = original_certainty
             
             logging.info(f"Recalibrated certainty: {original_certainty:.4f} → {recalibrated_certainty:.4f}")
+            
+        # Add reasoning trace
+        timestamp = datetime.now().isoformat()
+        reasoning_trace = {
+            "timestamp": timestamp,
+            "approach": approach,
+            "entity_id": entity_id,
+            "outcome": result.get("outcome"),
+            "certainty": result.get("certainty"),
+            "evidence_weights": result.get("evidence_weights"),
+            "conclusions_count": len(result.get("conclusions", []))
+        }
+        
+        # Add the reasoning trace to state metadata
+        if "reasoning_traces" not in state["metadata"]:
+            state["metadata"]["reasoning_traces"] = []
+            
+        state["metadata"]["reasoning_traces"].append(reasoning_trace)
         
         return result
         

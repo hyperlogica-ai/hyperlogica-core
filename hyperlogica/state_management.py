@@ -16,7 +16,7 @@ import copy
 from pathlib import Path
 
 
-def create_state(session_id: str) -> Dict[str, Any]:
+def create_state(session_id: str) -> dict:
     """
     Create a new state for a session.
     
@@ -30,30 +30,31 @@ def create_state(session_id: str) -> Dict[str, Any]:
                   "timestamp": ISO8601 string,
                   "concepts": {},  # Maps concept identifiers to vectors and metadata
                   "relationships": {},  # Maps relationship identifiers to source, target, and metadata
+                  "conclusions": {},  # Maps conclusion identifiers to conclusion data
                   "references": {},  # Maps reference identifiers to resolved entities
-                  "metadata": {},  # Session-specific metadata
-                  "ref_counter": 0  # Counter for generating reference IDs
+                  "metadata": {}  # Session-specific metadata
               }
     """
     return {
         "session_id": session_id,
-        "timestamp": datetime.datetime.now().isoformat(),
+        "timestamp": datetime.now().isoformat(),
         "concepts": {},
         "relationships": {},
+        "conclusions": {},  # Added this for storing conclusions
         "references": {},
         "metadata": {},
         "ref_counter": 0
     }
 
 
-def add_concept_to_state(state: Dict[str, Any], concept: Dict[str, Any]) -> Dict[str, Any]:
+def add_concept_to_state(state: dict, concept: dict) -> dict:
     """
     Add a concept to the state.
     
     Args:
         state (dict): Current state dictionary.
         concept (dict): Concept to add to the state, including identifier, 
-                        vector representation, and metadata.
+                       vector representation, and metadata.
         
     Returns:
         dict: Updated state dictionary with the new concept added.
@@ -61,35 +62,26 @@ def add_concept_to_state(state: Dict[str, Any], concept: Dict[str, Any]) -> Dict
     Raises:
         ValueError: If the concept is missing required fields.
     """
-    # Validate the concept
-    if "identifier" not in concept:
-        raise ValueError("Concept must include an identifier")
-    if "vector" not in concept:
-        raise ValueError("Concept must include a vector representation")
+    identifier = concept.get('identifier')
+    if not identifier:
+        raise ValueError("Concept missing required identifier field")
     
-    # Create new state (immutable approach)
-    new_state = copy.deepcopy(state)
+    # Make a deep copy of the concept to avoid reference issues
+    import copy
+    concept_copy = copy.deepcopy(concept)
     
-    # Add reference if it doesn't already exist
-    if concept["identifier"] not in new_state["concepts"]:
-        new_state["ref_counter"] += 1
-        ref_id = f"state[{new_state['ref_counter']}]"
-        new_state["references"][ref_id] = {
-            "type": "concept",
-            "identifier": concept["identifier"]
-        }
+    # Add to state
+    state['concepts'][identifier] = concept_copy
     
-    # Add or update the concept
-    new_state["concepts"][concept["identifier"]] = {
-        "vector": concept["vector"],
-        "metadata": concept.get("metadata", {}),
-        "timestamp": datetime.datetime.now().isoformat()
-    }
+    # Add reference if needed
+    state['ref_counter'] += 1
+    reference_id = f"state[{state['ref_counter']}]"
+    state['references'][reference_id] = {'type': 'concept', 'id': identifier}
     
-    return new_state
+    return state
 
 
-def add_relation_to_state(state: Dict[str, Any], relation: Dict[str, Any]) -> Dict[str, Any]:
+def add_relation_to_state(state: dict, relation: dict) -> dict:
     """
     Add a relation to the state.
     
@@ -103,46 +95,62 @@ def add_relation_to_state(state: Dict[str, Any], relation: Dict[str, Any]) -> Di
         
     Raises:
         ValueError: If the relation is missing required fields.
-        KeyError: If source or target concept identifiers don't exist in the state.
     """
-    # Validate the relation
-    if "identifier" not in relation:
-        raise ValueError("Relation must include an identifier")
-    if "source" not in relation:
-        raise ValueError("Relation must include a source")
-    if "target" not in relation:
-        raise ValueError("Relation must include a target")
-    if "relation_type" not in relation:
-        raise ValueError("Relation must include a relation_type")
+    identifier = relation.get('identifier')
+    if not identifier:
+        raise ValueError("Relation missing required identifier field")
     
-    # Check if source and target exist
-    if relation["source"] not in state["concepts"]:
-        raise KeyError(f"Source concept '{relation['source']}' not found in state")
-    if relation["target"] not in state["concepts"]:
-        raise KeyError(f"Target concept '{relation['target']}' not found in state")
+    # Make a deep copy of the relation to avoid reference issues
+    import copy
+    relation_copy = copy.deepcopy(relation)
     
-    # Create new state (immutable approach)
-    new_state = copy.deepcopy(state)
+    # Add to state
+    state['relationships'][identifier] = relation_copy
     
-    # Add reference if it doesn't already exist
-    if relation["identifier"] not in new_state["relationships"]:
-        new_state["ref_counter"] += 1
-        ref_id = f"state[{new_state['ref_counter']}]"
-        new_state["references"][ref_id] = {
-            "type": "relation",
-            "identifier": relation["identifier"]
-        }
+    # Add reference if needed
+    state['ref_counter'] += 1
+    reference_id = f"state[{state['ref_counter']}]"
+    state['references'][reference_id] = {'type': 'relation', 'id': identifier}
     
-    # Add or update the relation
-    new_state["relationships"][relation["identifier"]] = {
-        "source": relation["source"],
-        "target": relation["target"],
-        "relation_type": relation["relation_type"],
-        "metadata": relation.get("metadata", {}),
-        "timestamp": datetime.datetime.now().isoformat()
-    }
+    return state
+
+
+def add_conclusion_to_state(state: dict, conclusion: dict) -> dict:
+    """
+    Add a conclusion to the state.
     
-    return new_state
+    Args:
+        state (dict): Current state dictionary.
+        conclusion (dict): Conclusion to add to the state, including identifier,
+                          source rule, source fact, and derived information.
+        
+    Returns:
+        dict: Updated state dictionary with the new conclusion added.
+        
+    Raises:
+        ValueError: If the conclusion is missing required fields.
+    """
+    identifier = conclusion.get('identifier')
+    if not identifier:
+        raise ValueError("Conclusion missing required identifier field")
+    
+    # Make a deep copy of the conclusion to avoid reference issues
+    import copy
+    conclusion_copy = copy.deepcopy(conclusion)
+    
+    # Ensure conclusions dictionary exists
+    if 'conclusions' not in state:
+        state['conclusions'] = {}
+        
+    # Add to state
+    state['conclusions'][identifier] = conclusion_copy
+    
+    # Add reference if needed
+    state['ref_counter'] += 1
+    reference_id = f"state[{state['ref_counter']}]"
+    state['references'][reference_id] = {'type': 'conclusion', 'id': identifier}
+    
+    return state
 
 
 def resolve_reference(state: Dict[str, Any], reference: str) -> Dict[str, Any]:
@@ -649,41 +657,45 @@ def remove_relation(state: Dict[str, Any], relation_id: str) -> Dict[str, Any]:
     return new_state
 
 
-def save_state(state: Dict[str, Any], path: str, format: str = "pkl") -> bool:
+def save_state(state: dict, path: str) -> bool:
     """
     Save the state to disk.
     
     Args:
         state (dict): State dictionary to save.
         path (str): File path where the state should be saved.
-        format (str): Format to save in ("pkl" or "json")
         
     Returns:
         bool: True if the state was successfully saved, False otherwise.
         
     Raises:
         IOError: If the directory doesn't exist or isn't writable.
-        ValueError: If format is invalid.
     """
-    if format not in ["pkl", "json"]:
-        raise ValueError(f"Invalid format: {format}. Must be 'pkl' or 'json'")
-    
-    # Ensure directory exists
-    directory = Path(path).parent
-    directory.mkdir(parents=True, exist_ok=True)
-    
     try:
-        if format == "pkl":
-            with open(path, "wb") as f:
-                pickle.dump(state, f)
-        else:  # format == "json"
-            # Note: json cannot serialize numpy arrays and some other objects directly
-            # This is a simplified version - in production, you'd need custom JSON serialization
-            with open(path, "w") as f:
-                json.dump(state, f, default=lambda o: str(o))
+        # Create directory if it doesn't exist
+        import os
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        
+        # Add metadata about save time
+        state["metadata"]["last_saved"] = datetime.now().isoformat()
+        
+        # Log state statistics before saving
+        import logging
+        logging.info(f"Saving state with {len(state.get('concepts', {}))} concepts, "
+                    f"{len(state.get('relationships', {}))} relationships, "
+                    f"{len(state.get('conclusions', {}))} conclusions")
+        
+        # Save to file with pickle
+        import pickle
+        with open(path, 'wb') as f:
+            pickle.dump(state, f)
+        
         return True
-    except (IOError, OSError) as e:
-        raise IOError(f"Error saving state to {path}: {str(e)}")
+        
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to save state: {str(e)}")
+        return False
 
 
 def load_state(path: str, format: str = "pkl") -> Dict[str, Any]:
