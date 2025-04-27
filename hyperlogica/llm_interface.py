@@ -38,116 +38,47 @@ logger = logging.getLogger(__name__)
 if "OPENAI_API_KEY" not in os.environ:
     logger.warning("OpenAI API key not found in environment variables.")
 
-def get_english_to_acep_prompt(text: str, context: Dict[str, Any]) -> str:
-    """
-    Generate a prompt for converting English text to ACEP representation.
+@backoff.on_exception(backoff.expo, Exception, max_tries=3)
+def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert English text to ACEP representation using an LLM and generate vector."""
+    # Initialize the OpenAI client
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
-    Args:
-        text (str): The English text to convert to ACEP
-        context (dict): Contextual information about the domain and entity
-        
-    Returns:
-        str: A formatted prompt for the LLM
-    """
+    # Set up context values
     domain = context.get("domain", "general")
     certainty = context.get("certainty", 0.9)
     entity_id = context.get("entity_id", "")
     vector_dim = context.get("vector_dimension", 10000)
     
+    # Create prompt for ACEP angle-bracket syntax
     prompt = f"""
-    Convert this statement to ACEP (AI Conceptual Exchange Protocol) representation:
-
+    Convert this text to ACEP (AI Conceptual Exchange Protocol) representation using angle-bracket syntax:
+    
     Text: {text}
     Domain: {domain}
     Entity: {entity_id}
-    Vector Dimension: {vector_dim}
     
-    The ACEP representation must include these mandatory fields:
-    1. "type" - Must be one of: "concept", "relation", or "operation"
-    2. "identifier" - A unique, descriptive ID reflecting the content
-    3. "attributes" - A dictionary of attributes including certainty
+    For conditional statements (if-then), use the format:
+    <{{concept:condition}}> → <{{causal:{certainty}}}> → <{{concept:result}}>
     
-    For conditional statements (if-then), also include:
-    - Set type to "relation"
-    - "attributes.conditional" set to true
-    - "attributes.antecedent" - The exact "if" part of the statement
-    - "attributes.consequent" - The exact "then" part of the statement
-    - "attributes.rule_text" - The full original text
+    For facts or statements, use:
+    <{{concept:fact, certainty:{certainty}}}>
     
-    Example ACEP representation for a conditional rule:
-    ```json
-    {{
-      "type": "relation",
-      "identifier": "pe_ratio_below_industry_implies_undervalued",
-      "attributes": {{
-        "rule_text": "If P/E ratio is below industry average, then the stock is potentially undervalued",
-        "antecedent": "P/E ratio is below industry average",
-        "consequent": "the stock is potentially undervalued",
-        "conditional": true,
-        "certainty": 0.8
-      }}
-    }}
-    ```
+    Example for "If it rains, the ground gets wet":
+    <{{concept:rain}}> → <{{causal:0.9}}> → <{{concept:ground_wet}}>
     
-    Example ACEP representation for a fact:
-    ```json
-    {{
-      "type": "concept",
-      "identifier": "aapl_pe_ratio_below_industry",
-      "attributes": {{
-        "fact_text": "P/E ratio is 28.5, which is below the technology industry average of 32.8",
-        "entity_id": "AAPL",
-        "metric_type": "pe_ratio",
-        "value": 28.5,
-        "assessment": "below_average",
-        "certainty": 0.95
-      }}
-    }}
-    ```
-    
-    Ensure you include ALL mandatory fields and provide meaningful values that accurately represent the statement.
-    Make the identifier descriptive and reflective of the content.
-    
-    Return only the ACEP representation as valid JSON.
+    Include all relevant attributes and ensure proper ACEP syntax with angle brackets.
     """
-    
-    return prompt
-
-@backoff.on_exception(backoff.expo, Exception, max_tries=3)
-def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert English text to ACEP representation using an LLM and generate appropriate vector.
-    
-    Args:
-        text (str): English text to convert
-        context (dict): Contextual information about the domain and entity
-        llm_options (dict): Options for the LLM API call
-        
-    Returns:
-        dict: ACEP representation of the input text with vector representation
-        
-    Raises:
-        ValueError: If the text cannot be converted to a valid ACEP representation
-        Exception: If the API call fails after retries
-    """
-    # Initialize the OpenAI client
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    
-    # Generate the prompt
-    prompt = get_english_to_acep_prompt(text, context)
-    
-    # Log the conversion attempt
-    logging.info(f"Converting to ACEP: {text[:50]}...")
     
     # Configure API call
     model = llm_options.get("model", "gpt-4")
     temperature = llm_options.get("temperature", 0.0)
     max_tokens = llm_options.get("max_tokens", 2000)
     
-    logging.info(f"Calling OpenAI API with model: {model}")
+    logging.info(f"Converting to ACEP: {text[:50]}...")
     
     try:
-        # Make the API call
+        # Make the API call without JSON format constraint
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -155,95 +86,55 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
                 {"role": "user", "content": prompt}
             ],
             temperature=temperature,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"}
+            max_tokens=max_tokens
         )
         
-        # Extract and parse the response
-        content = response.choices[0].message.content
-        acep_representation = json.loads(content)
+        # Extract the response text containing ACEP angle-bracket notation
+        acep_text = response.choices[0].message.content.strip()
         
-        # Validate required fields
-        required_fields = ["type", "identifier", "attributes"]
-        for field in required_fields:
-            if field not in acep_representation:
-                raise ValueError(f"Missing required field '{field}' in ACEP representation")
-                
-        # Ensure certainty is set
-        if "certainty" not in acep_representation.get("attributes", {}):
-            acep_representation["attributes"]["certainty"] = context.get("certainty", 0.9)
-            
-        # Ensure entity_id is set for concepts and facts
-        if acep_representation["type"] == "concept" and "entity_id" not in acep_representation.get("attributes", {}):
-            acep_representation["attributes"]["entity_id"] = context.get("entity_id", "")
-            
-        # Generate vector representation for the ACEP concept using identifier and content info
+        # Generate an identifier based on the text
+        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        identifier = f"{entity_id}_{text_hash}" if entity_id else f"concept_{text_hash}"
+        
+        # Generate vector for this concept
         vector_dimension = context.get("vector_dimension", 10000)
-        vector_seed = hash(acep_representation["identifier"]) % (2**32)
+        vector = generate_vector(identifier, dimension=vector_dimension)
         
-        # Generate vector and add to representation
-        vector = generate_vector(
-            acep_representation["identifier"],
-            dimension=vector_dimension,
-            seed=vector_seed
-        )
+        # Create a structured representation that includes the ACEP text
+        acep_representation = {
+            "type": "acep_concept",
+            "identifier": identifier,
+            "acep_text": acep_text,
+            "original_text": text,
+            "attributes": {
+                "certainty": certainty,
+                "entity_id": entity_id,
+                "domain": domain
+            },
+            "vector": vector
+        }
         
-        acep_representation["vector"] = vector
+        # Determine if this is a conditional (rule) or fact
+        if "→" in acep_text or "->" in acep_text:
+            acep_representation["type"] = "acep_relation"
+            # Extract conditional parts if possible
+            try:
+                if "if" in text.lower() and "then" in text.lower():
+                    parts = text.lower().split("then")
+                    antecedent = parts[0].replace("if", "", 1).strip()
+                    consequent = parts[1].strip()
+                    acep_representation["attributes"]["antecedent"] = antecedent
+                    acep_representation["attributes"]["consequent"] = consequent
+                    acep_representation["attributes"]["conditional"] = True
+            except Exception as e:
+                logging.warning(f"Could not extract conditional parts: {e}")
         
-        logging.info(f"Successfully converted to ACEP: {acep_representation['identifier']}")
+        logging.info(f"Successfully converted to ACEP: {identifier}")
         return acep_representation
         
     except Exception as e:
         logging.error(f"Error converting text to ACEP: {str(e)}")
         raise
-
-def get_acep_to_english_prompt(acep_representation: Dict[str, Any], context: Dict[str, Any]) -> str:
-    """
-    Generate a prompt for converting ACEP representation to natural language.
-    
-    Args:
-        acep_representation (dict): ACEP structured representation
-        context (dict): Contextual information for conversion
-        
-    Returns:
-        str: A formatted prompt for the LLM
-    """
-    domain = context.get("domain", "general")
-    entity_id = context.get("entity_id", "")
-    
-    # Need to convert vector to a string summary since we can't directly include in the prompt
-    vector_info = ""
-    if "vector" in acep_representation:
-        vector = acep_representation["vector"]
-        vector_info = f"Vector dimension: {vector.shape[0]}, norm: {np.linalg.norm(vector):.4f}"
-        # Make a copy without the vector for the prompt
-        acep_clean = acep_representation.copy()
-        acep_clean.pop("vector", None)
-    else:
-        acep_clean = acep_representation
-    
-    prompt = f"""
-    Convert this ACEP (AI Conceptual Exchange Protocol) representation into natural language:
-    
-    ACEP Representation:
-    {json.dumps(acep_clean, indent=2)}
-    
-    Context:
-    - Domain: {domain}
-    - Entity ID: {entity_id}
-    - {vector_info}
-    
-    Based on this ACEP representation, generate clear, concise natural language that:
-    - Accurately conveys the same meaning
-    - Includes appropriate qualifiers to express certainty
-    - Uses domain-appropriate terminology
-    - Is suitable for human readers
-    
-    Your response should be a single paragraph of natural language text that fully captures
-    the information represented in the ACEP structure.
-    """
-    
-    return prompt
 
 @backoff.on_exception(backoff.expo, Exception, max_tries=3)
 def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> str:
@@ -254,19 +145,15 @@ def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[s
         acep_representation (dict): Structured ACEP representation to convert.
         context (dict): Contextual information about the domain and entity.
         llm_options (dict, optional): Options for the LLM API call.
-                                     Defaults to None.
         
     Returns:
         str: Natural language English text representing the ACEP content.
-        
-    Raises:
-        ValueError: If the ACEP representation is invalid or cannot be converted.
     """
     # Set default LLM options if not provided
     if llm_options is None:
         llm_options = {
             "model": "gpt-4",
-            "temperature": 0.3,  # Slightly higher temperature for more natural language
+            "temperature": 0.3,
             "max_tokens": 1000
         }
     
@@ -277,8 +164,25 @@ def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[s
     identifier = acep_representation.get("identifier", "unknown")
     logger.info(f"Converting ACEP to English: {identifier}")
     
+    # Extract the ACEP text if available, or use the original text
+    acep_text = acep_representation.get("acep_text", "")
+    original_text = acep_representation.get("original_text", "")
+    
     # Create prompt
-    prompt = get_acep_to_english_prompt(acep_representation, context)
+    prompt = f"""
+    Convert this ACEP (AI Conceptual Exchange Protocol) representation into natural language:
+    
+    Original text: {original_text}
+    ACEP representation: {acep_text}
+    Domain: {context.get('domain', 'general')}
+    Entity ID: {context.get('entity_id', '')}
+    
+    Generate clear, concise natural language that:
+    - Accurately conveys the same meaning
+    - Includes appropriate qualifiers to express certainty
+    - Uses domain-appropriate terminology
+    - Is suitable for human readers
+    """
     
     try:
         # Make the API call
@@ -300,59 +204,8 @@ def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[s
         
     except Exception as e:
         logger.error(f"Error converting ACEP to English: {str(e)}")
-        raise
-
-def get_explanation_prompt(reasoning_trace: Dict[str, Any], context: Dict[str, Any]) -> str:
-    """
-    Generate a prompt for creating a natural language explanation from a reasoning trace.
-    
-    Args:
-        reasoning_trace (dict): Reasoning trace data
-        context (dict): Contextual information for the explanation
-        
-    Returns:
-        str: A formatted prompt for the LLM
-    """
-    domain = context.get("domain", "general")
-    entity_id = context.get("entity_id", "")
-    recommendation = context.get("recommendation", "")
-    certainty = context.get("certainty", 0.5)
-    
-    # Clean the trace of any vector data for the prompt
-    def remove_vectors(obj):
-        if isinstance(obj, dict):
-            return {k: remove_vectors(v) for k, v in obj.items() if k != "vector"}
-        elif isinstance(obj, list):
-            return [remove_vectors(item) for item in obj]
-        else:
-            return obj
-    
-    clean_trace = remove_vectors(reasoning_trace)
-    
-    prompt = f"""
-    Explain the following reasoning process in clear, natural language:
-    
-    Reasoning trace:
-    {json.dumps(clean_trace, indent=2)}
-    
-    Context:
-    - Domain: {domain}
-    - Entity: {entity_id}
-    - Final recommendation: {recommendation}
-    - Confidence level: {certainty:.2%}
-    
-    Your explanation should:
-    1. Start with the final recommendation and its confidence level
-    2. Explain the key factors that led to this conclusion
-    3. Describe the logical steps in the reasoning process
-    4. Use domain-appropriate terminology
-    5. Be understandable to a non-technical audience
-    
-    Format the explanation as a well-structured paragraph that clearly explains the reasoning process
-    behind the recommendation, highlighting the most important evidence and how certainty was determined.
-    """
-    
-    return prompt
+        # Return original text as fallback if conversion fails
+        return original_text
 
 @backoff.on_exception(backoff.expo, Exception, max_tries=3)
 def generate_explanation(reasoning_trace: Dict[str, Any], context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> str:
@@ -373,15 +226,48 @@ def generate_explanation(reasoning_trace: Dict[str, Any], context: Dict[str, Any
     if llm_options is None:
         llm_options = {
             "model": "gpt-4",
-            "temperature": 0.4,  # Higher temperature for more creative explanations
+            "temperature": 0.4,
             "max_tokens": 1500
         }
     
     # Initialize the OpenAI client
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
+    # Prepare the reasoning trace for the prompt
+    # Remove large vectors to keep prompt size manageable
+    def remove_vectors(obj):
+        if isinstance(obj, dict):
+            return {k: remove_vectors(v) for k, v in obj.items() if k != "vector"}
+        elif isinstance(obj, list):
+            return [remove_vectors(item) for item in obj]
+        else:
+            return obj
+    
+    clean_trace = remove_vectors(reasoning_trace)
+    
     # Create the prompt
-    prompt = get_explanation_prompt(reasoning_trace, context)
+    prompt = f"""
+    Explain the following reasoning process in clear, natural language:
+    
+    Reasoning trace:
+    {json.dumps(clean_trace, indent=2)}
+    
+    Context:
+    - Domain: {context.get('domain', 'general')}
+    - Entity: {context.get('entity_id', '')}
+    - Final recommendation: {context.get('recommendation', '')}
+    - Confidence level: {context.get('certainty', 0.5):.2%}
+    
+    Your explanation should:
+    1. Start with the final recommendation and its confidence level
+    2. Explain the key factors that led to this conclusion
+    3. Describe the logical steps in the reasoning process
+    4. Use domain-appropriate terminology
+    5. Be understandable to a non-technical audience
+    
+    Format the explanation as a well-structured paragraph that clearly explains the reasoning process
+    behind the recommendation, highlighting the most important evidence and how certainty was determined.
+    """
     
     try:
         # Make the API call
