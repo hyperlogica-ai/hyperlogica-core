@@ -18,12 +18,12 @@ from functools import reduce
 # Import vector operations
 from .vector_operations import (
     calculate_similarity, bind_vectors, bundle_vectors, normalize_vector,
-    unbind_vectors, create_sequence_vector, cleanse_vector, generate_vector
+    unbind_vectors, generate_vector
 )
 
 from .reasoning_engine import (
-    is_conditional, extract_antecedent, extract_consequent, calculate_certainty,
-    recalibrate_certainty, vector_matches, matches
+    is_conditional, calculate_certainty,
+    recalibrate_certainty
 )
 
 # Configure logger
@@ -168,8 +168,8 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
     negative_outcome = domain_config.get("negative_outcome", "NEGATIVE")
     neutral_outcome = domain_config.get("neutral_outcome", "NEUTRAL")
     
-    # Get similarity threshold from config
-    similarity_threshold = config.get("similarity_threshold", 0.7)
+    # Get similarity threshold from config with improved default
+    similarity_threshold = config.get("similarity_threshold", 0.65)
     
     # Get entity ID from facts if available
     entity_id = None
@@ -183,12 +183,6 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
     conclusions = []
     vector_dimension = config.get("vector_dimension", 10000)
     
-    # Extract fact vectors for vector-based operations
-    fact_vectors = []
-    for fact in facts:
-        if "vector" in fact:
-            fact_vectors.append(fact["vector"])
-    
     # Process conditional rules with vector operations
     for rule_idx, rule in enumerate(rules):
         rule_id = rule.get("identifier", f"rule_{rule_idx}")
@@ -198,8 +192,14 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
             logger.warning(f"Skipping rule {rule_id}: not conditional or missing vector")
             continue
         
-        # Get rule vector
-        rule_vector = rule["vector"]
+        # For rules with component vectors, use unbinding for more accurate matching
+        component_vectors = rule.get("component_vectors", {})
+        if "antecedent" in component_vectors:
+            antecedent_vector = component_vectors["antecedent"]
+            consequent_vector = component_vectors["consequent"]
+            has_components = True
+        else:
+            has_components = False
         
         # Process each fact for this rule
         for fact_idx, fact in enumerate(facts):
@@ -220,9 +220,15 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
                 antecedent_text = "unknown"
             
             # Check if fact matches the rule's antecedent using vector similarity
-            match_result, similarity = matches(fact, antecedent_text, store)
+            if has_components:
+                # Use direct similarity with antecedent vector for more precise matching
+                similarity = calculate_similarity(fact_vector, antecedent_vector, method="cosine")
+            else:
+                # Fallback to older method
+                match_result, similarity = matches(fact, antecedent_text, store)
             
-            if match_result:
+            # Only proceed if similarity exceeds threshold
+            if similarity >= similarity_threshold:
                 logger.info(f"Match found! Rule {rule_id} matches fact {fact_id} with similarity {similarity:.4f}")
                 
                 try:
@@ -231,25 +237,29 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
                     logger.debug(f"Rule consequent: {consequent_text}")
                     
                     # Create a vector for the conclusion using vector operations
-                    # Unbind the fact vector from the rule vector to get the consequent vector
-                    # This is an approximation of the rule application in vector space
-                    conclusion_vector = unbind_vectors(rule_vector, fact_vector)
-                    
-                    # Clean the vector to ensure it's well-formed
-                    conclusion_vector = cleanse_vector(conclusion_vector)
+                    if has_components:
+                        # Use the precomputed consequent vector for better accuracy
+                        conclusion_vector = consequent_vector
+                    else:
+                        # Fallback to unbinding (less accurate if vectors were randomly generated)
+                        conclusion_vector = unbind_vectors(rule["vector"], fact_vector)
+                        conclusion_vector = cleanse_vector(conclusion_vector)
                     
                     # Create a unique identifier for the conclusion
                     conclusion_id = f"conclusion_{entity_id}_{len(conclusions)+1}"
                     
-                    # Calculate certainty for the conclusion
+                    # Calculate certainty with adjusted formula to account for similarity distribution
                     rule_certainty = rule.get("attributes", {}).get("certainty", 0.9)
                     fact_certainty = fact.get("attributes", {}).get("certainty", 0.9)
-                    match_certainty = similarity
                     
-                    # Calculate certainty as a function of rule certainty, fact certainty, and match quality
-                    certainty = min(rule_certainty, fact_certainty) * match_certainty
+                    # Adjust similarity to emphasize genuine matches
+                    # Transform similarity from [threshold, 1.0] to [0.0, 1.0]
+                    adjusted_similarity = (similarity - similarity_threshold) / (1.0 - similarity_threshold)
+                    adjusted_similarity = max(0.0, min(1.0, adjusted_similarity))
                     
-                    # Create the conclusion with its vector representation
+                    certainty = min(rule_certainty, fact_certainty) * adjusted_similarity
+                    
+                    # Create the conclusion
                     conclusion = {
                         "identifier": conclusion_id,
                         "type": "concept",
@@ -269,7 +279,7 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
                     signal_type = classify_signal_type(conclusion, domain_config)
                     conclusion["attributes"]["signal_type"] = signal_type
                     
-                    # Add to our conclusions list
+                    # Add to conclusions list
                     conclusions.append(conclusion)
                     logger.info(f"Generated conclusion: {conclusion_id} with certainty {certainty:.4f}, signal type: {signal_type}")
                     
@@ -288,7 +298,7 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
                 except Exception as e:
                     logger.error(f"Error processing match: {str(e)}")
     
-    # Calculate final outcome based on evidence weights
+    # Calculate final outcome with improved differential
     total_evidence = positive_evidence + negative_evidence + neutral_evidence
     logger.info(f"Evidence weights - Positive: {positive_evidence:.4f}, Negative: {negative_evidence:.4f}, Neutral: {neutral_evidence:.4f}")
     
@@ -306,34 +316,26 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
             }
         }
     
-    # Determine outcome and certainty
-    if positive_evidence > negative_evidence:
+    # Calculate outcome with more distinctive certainty
+    positive_ratio = positive_evidence / total_evidence
+    negative_ratio = negative_evidence / total_evidence
+    
+    # Require stronger evidence for positive/negative outcomes
+    if positive_ratio > negative_ratio and positive_ratio > 0.4:
         outcome = positive_outcome
-        certainty = 0.5 + (positive_evidence / total_evidence) * 0.5
+        # Non-linear certainty that emphasizes strong evidence
+        certainty = 0.5 + (positive_ratio ** 2) * 0.5
         logger.info(f"Positive evidence dominates: {positive_evidence:.4f} > {negative_evidence:.4f}, certainty: {certainty:.4f}")
-    elif negative_evidence > positive_evidence:
+    elif negative_ratio > positive_ratio and negative_ratio > 0.4:
         outcome = negative_outcome
-        certainty = 0.5 + (negative_evidence / total_evidence) * 0.5
+        certainty = 0.5 + (negative_ratio ** 2) * 0.5
         logger.info(f"Negative evidence dominates: {negative_evidence:.4f} > {positive_evidence:.4f}, certainty: {certainty:.4f}")
     else:
         outcome = neutral_outcome
-        certainty = 0.5
-        logger.info("Evidence is balanced, neutral outcome")
-    
-    # Bundle all conclusion vectors to create a combined representation
-    # This can be used for future reasoning or explanations
-    if conclusions and all("vector" in c for c in conclusions):
-        try:
-            conclusion_vectors = [c["vector"] for c in conclusions]
-            bundled_vector = bundle_vectors(conclusion_vectors)
-            
-            # Store this bundled representation for potential future use
-            result_vector = bundled_vector
-        except Exception as e:
-            logger.warning(f"Failed to bundle conclusion vectors: {str(e)}")
-            result_vector = None
-    else:
-        result_vector = None
+        # Calculate uncertainty based on how close positive and negative evidence are
+        evidence_diff = abs(positive_evidence - negative_evidence) / total_evidence
+        certainty = 0.5 + evidence_diff * 0.3
+        logger.info("Evidence is mixed, neutral outcome")
     
     return {
         "outcome": outcome,
@@ -344,8 +346,7 @@ def vector_weighted_approach(rules: List[Dict], facts: List[Dict],
             "positive": positive_evidence,
             "negative": negative_evidence,
             "neutral": neutral_evidence
-        },
-        "result_vector": result_vector
+        }
     }
 
 

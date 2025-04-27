@@ -40,7 +40,7 @@ if "OPENAI_API_KEY" not in os.environ:
 
 @backoff.on_exception(backoff.expo, Exception, max_tries=3)
 def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert English text to ACEP representation using an LLM and generate vector."""
+    """Convert English text to ACEP representation using an LLM and generate compositional vector."""
     # Initialize the OpenAI client
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
@@ -78,7 +78,7 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
     logging.info(f"Converting to ACEP: {text[:50]}...")
     
     try:
-        # Make the API call without JSON format constraint
+        # Make the API call
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -96,38 +96,86 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
         text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
         identifier = f"{entity_id}_{text_hash}" if entity_id else f"concept_{text_hash}"
         
-        # Generate vector for this concept
+        # Create a compositional vector based on the content
         vector_dimension = context.get("vector_dimension", 10000)
-        vector = generate_vector(identifier, dimension=vector_dimension)
         
-        # Create a structured representation that includes the ACEP text
-        acep_representation = {
-            "type": "acep_concept",
-            "identifier": identifier,
-            "acep_text": acep_text,
-            "original_text": text,
-            "attributes": {
-                "certainty": certainty,
-                "entity_id": entity_id,
-                "domain": domain
-            },
-            "vector": vector
-        }
+        # Check if this is a conditional (rule) or fact
+        is_conditional_statement = "→" in acep_text or "->" in acep_text or "if" in text.lower() and "then" in text.lower()
         
-        # Determine if this is a conditional (rule) or fact
-        if "→" in acep_text or "->" in acep_text:
-            acep_representation["type"] = "acep_relation"
-            # Extract conditional parts if possible
+        if is_conditional_statement:
+            # Extract antecedent and consequent
             try:
-                if "if" in text.lower() and "then" in text.lower():
-                    parts = text.lower().split("then")
-                    antecedent = parts[0].replace("if", "", 1).strip()
-                    consequent = parts[1].strip()
-                    acep_representation["attributes"]["antecedent"] = antecedent
-                    acep_representation["attributes"]["consequent"] = consequent
-                    acep_representation["attributes"]["conditional"] = True
+                parts = text.lower().split("then")
+                antecedent = parts[0].replace("if", "", 1).strip()
+                consequent = parts[1].strip().rstrip(".")
+                
+                # Generate component vectors
+                antecedent_vector = generate_vector(antecedent, dimension=vector_dimension)
+                consequent_vector = generate_vector(consequent, dimension=vector_dimension)
+                
+                # Bind the antecedent and consequent vectors to create rule vector
+                vector = bind_vectors(antecedent_vector, consequent_vector)
+                
+                # Create ACEP representation with rule components
+                acep_representation = {
+                    "type": "acep_relation",
+                    "identifier": identifier,
+                    "acep_text": acep_text,
+                    "original_text": text,
+                    "attributes": {
+                        "certainty": certainty,
+                        "entity_id": entity_id,
+                        "domain": domain,
+                        "antecedent": antecedent,
+                        "consequent": consequent,
+                        "conditional": True
+                    },
+                    "component_vectors": {
+                        "antecedent": antecedent_vector,
+                        "consequent": consequent_vector
+                    },
+                    "vector": vector
+                }
             except Exception as e:
-                logging.warning(f"Could not extract conditional parts: {e}")
+                logging.warning(f"Error creating compositional vector for conditional: {e}")
+                # Fallback to simple vector generation
+                vector = generate_vector(identifier, dimension=vector_dimension)
+                acep_representation = {
+                    "type": "acep_relation",
+                    "identifier": identifier,
+                    "acep_text": acep_text,
+                    "original_text": text,
+                    "attributes": {
+                        "certainty": certainty,
+                        "entity_id": entity_id,
+                        "domain": domain,
+                        "conditional": True
+                    },
+                    "vector": vector
+                }
+        else:
+            # For facts, generate vectors based on key concepts in the text
+            keywords = extract_keywords(text)
+            if keywords:
+                # Generate a vector for each keyword and bundle them
+                keyword_vectors = [generate_vector(kw, dimension=vector_dimension) for kw in keywords]
+                vector = bundle_vectors(keyword_vectors)
+            else:
+                # Fallback if no keywords found
+                vector = generate_vector(identifier, dimension=vector_dimension)
+            
+            acep_representation = {
+                "type": "acep_concept",
+                "identifier": identifier,
+                "acep_text": acep_text,
+                "original_text": text,
+                "attributes": {
+                    "certainty": certainty,
+                    "entity_id": entity_id,
+                    "domain": domain
+                },
+                "vector": vector
+            }
         
         logging.info(f"Successfully converted to ACEP: {identifier}")
         return acep_representation
@@ -135,6 +183,35 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
     except Exception as e:
         logging.error(f"Error converting text to ACEP: {str(e)}")
         raise
+
+
+def extract_keywords(text: str) -> List[str]:
+    """Extract key concepts from text for vector composition."""
+    # Simple implementation - extract nouns and key numbers
+    import re
+    
+    # Extract potential keywords (nouns, numbers with units)
+    keywords = []
+    
+    # Simple pattern for numbers with units
+    number_pattern = r'\b\d+(?:\.\d+)?\s*(?:%|percent|ratio|times|months|quarters|years)\b'
+    numbers = re.findall(number_pattern, text.lower())
+    keywords.extend(numbers)
+    
+    # Add important financial terms if present
+    financial_terms = [
+        "pe ratio", "revenue growth", "profit margin", "debt-to-equity", 
+        "return on equity", "price", "revenue", "margin", "debt", "equity", 
+        "growth", "analyst", "rating", "undervalued", "overvalued"
+    ]
+    
+    for term in financial_terms:
+        if term in text.lower():
+            keywords.append(term)
+    
+    # Return unique keywords
+    return list(set(keywords))
+
 
 @backoff.on_exception(backoff.expo, Exception, max_tries=3)
 def convert_acep_to_english(acep_representation: Dict[str, Any], context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> str:

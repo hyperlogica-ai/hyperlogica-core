@@ -21,7 +21,7 @@ from .config_parser import parse_input_config, validate_config, extract_processi
 from .config_parser import extract_persistence_options, extract_output_schema
 from .vector_operations import (
     generate_vector, normalize_vector, bind_vectors, unbind_vectors,
-    bundle_vectors, calculate_similarity, cleanse_vector
+    bundle_vectors, calculate_similarity
 )
 from .vector_store import create_store, add_vector, get_vector, save_store, load_store
 from .llm_interface import convert_english_to_acep, convert_acep_to_english, generate_explanation
@@ -727,4 +727,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         exit(1)
-        

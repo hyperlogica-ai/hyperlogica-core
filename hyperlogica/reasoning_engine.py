@@ -1,517 +1,136 @@
 """
-Reasoning Engine for the Hyperlogica System
+Reasoning Engine Module
 
-This module implements a functional-style reasoning engine that applies various
-logical patterns to concepts and their relationships using hyperdimensional computing
-principles for vector operations and maintains careful tracking of certainty propagation.
-
-The reasoning engine provides core functionality for:
-1. Applying logical patterns (modus ponens, modus tollens, etc.)
-2. Building reasoning chains
-3. Managing certainty calculations
-4. Generating explanations of reasoning steps
+Pure functional implementation of the hyperdimensional reasoning engine for Hyperlogica.
+Implements bounded syllogistic reasoning with controlled uncertainty propagation.
 """
 
-import numpy as np
-import json
-from typing import Dict, List, Tuple, Any, Optional, Callable, Union
 import logging
 import uuid
+from typing import Dict, List, Tuple, Any, Optional, Union
+import numpy as np
+from datetime import datetime
+
+# Import vector operations
 from .vector_operations import (
-    bind_vectors, unbind_vectors, bundle_vectors, permute_vector,
-    calculate_similarity, normalize_vector, generate_vector
+    normalize_vector, bind_vectors, unbind_vectors, bundle_vectors, 
+    calculate_similarity, create_role_vectors, 
+    create_conditional_representation, extract_conditional_parts
 )
 
-# Configure module logger
+# Configure logging
 logger = logging.getLogger(__name__)
 
-# Type aliases for clarity
-Vector = np.ndarray
-Concept = Dict[str, Any]
-Rule = Dict[str, Any]
-Fact = Dict[str, Any]
-State = Dict[str, Any]
-VectorStore = Dict[str, Any]
-
-# Similarity threshold for vector matching
-DEFAULT_SIMILARITY_THRESHOLD = 0.7
-
-def is_conditional(rule: Rule) -> bool:
+def create_concept(identifier: str, vector: np.ndarray, 
+                  attributes: Dict[str, Any], 
+                  concept_type: str = "concept") -> Dict[str, Any]:
     """
-    Check if a rule is conditional (has an antecedent and consequent).
+    Create a concept representation with vector and attributes.
     
     Args:
-        rule (Dict): Rule representation to check
+        identifier (str): Unique identifier for the concept
+        vector (np.ndarray): Vector representation for the concept
+        attributes (Dict[str, Any]): Attributes including certainty, text, etc.
+        concept_type (str): Type of the concept ("concept", "rule", "fact", etc.)
         
     Returns:
-        bool: True if the rule is conditional, False otherwise
+        Dict[str, Any]: The concept representation
     """
-    return (
-        rule.get("attributes", {}).get("conditional", False) or
-        "antecedent" in rule.get("attributes", {}) or
-        "_if_" in rule.get("identifier", "")
-    )
+    # Ensure the concept has a certainty attribute
+    if "certainty" not in attributes:
+        attributes["certainty"] = 1.0  # Default high certainty
+    
+    # Create the concept structure
+    concept = {
+        "identifier": identifier,
+        "type": concept_type,
+        "vector": vector,
+        "attributes": attributes,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    return concept
 
-def extract_antecedent(rule: Rule) -> str:
+def parse_rule(rule_text: str) -> Tuple[str, str]:
     """
-    Extract the antecedent (condition part) from a conditional rule.
+    Parse a rule text into antecedent and consequent components.
     
     Args:
-        rule (Dict): Rule representation from which to extract the antecedent
+        rule_text (str): Natural language rule text
         
     Returns:
-        str: The antecedent text or identifier
+        Tuple[str, str]: (antecedent, consequent) parts of the rule
         
     Raises:
-        ValueError: If the rule is not conditional or has no identifiable antecedent
+        ValueError: If the rule cannot be parsed
     """
-    if not is_conditional(rule):
-        raise ValueError("Cannot extract antecedent from a non-conditional rule")
-    
-    attributes = rule.get("attributes", {})
-    
-    # Try to get from attributes first
-    if "antecedent" in attributes:
-        return attributes["antecedent"]
-    
-    # Try to extract from identifier
-    identifier = rule.get("identifier", "")
-    if "_if_" in identifier:
-        parts = identifier.split("_if_")
-        if len(parts) >= 2:
-            return parts[1]
-    
-    # Try to extract from rule text
-    rule_text = attributes.get("rule_text", "")
-    if "if" in rule_text.lower() and "then" in rule_text.lower():
+    # Try to split on "then"
+    if "then" in rule_text.lower():
         parts = rule_text.lower().split("then")
-        antecedent = parts[0]
+        antecedent = parts[0].strip()
+        
+        # Remove "if" from the beginning if present
         if antecedent.startswith("if "):
-            antecedent = antecedent[3:]
-        return antecedent.strip()
-    
-    raise ValueError(f"Could not extract antecedent from rule: {rule}")
-
-def extract_consequent(rule: Rule) -> str:
-    """
-    Extract the consequent (result part) from a conditional rule.
-    
-    Args:
-        rule (Dict): Rule representation from which to extract the consequent
-        
-    Returns:
-        str: The consequent text or identifier
-        
-    Raises:
-        ValueError: If the rule is not conditional or has no identifiable consequent
-    """
-    if not is_conditional(rule):
-        raise ValueError("Cannot extract consequent from a non-conditional rule")
-    
-    attributes = rule.get("attributes", {})
-    
-    # Try to get from attributes first
-    if "consequent" in attributes:
-        return attributes["consequent"]
-    
-    # Try to extract from identifier
-    identifier = rule.get("identifier", "")
-    if "_if_" in identifier:
-        parts = identifier.split("_if_")
-        if len(parts) >= 1:
-            return parts[0]
-    
-    # Try to extract from rule text
-    rule_text = attributes.get("rule_text", "")
-    if "if" in rule_text.lower() and "then" in rule_text.lower():
-        parts = rule_text.lower().split("then")
-        if len(parts) >= 2:
-            return parts[1].strip().rstrip(".")
-    
-    raise ValueError(f"Could not extract consequent from rule: {rule}")
-
-def vector_matches(fact_vector: Vector, antecedent_vector: Vector, 
-                  threshold: float = DEFAULT_SIMILARITY_THRESHOLD) -> bool:
-    """
-    Check if a fact vector matches an antecedent vector based on similarity.
-    
-    Args:
-        fact_vector (np.ndarray): Vector representation of the fact
-        antecedent_vector (np.ndarray): Vector representation of the antecedent
-        threshold (float, optional): Similarity threshold for considering a match.
-                                    Defaults to DEFAULT_SIMILARITY_THRESHOLD.
-        
-    Returns:
-        bool: True if vectors are sufficiently similar, False otherwise
-    """
-    similarity = calculate_similarity(fact_vector, antecedent_vector)
-    return similarity >= threshold
-
-def detect_vector_type(vector: Vector) -> str:
-    """
-    Detect the type of a vector based on its values.
-    
-    Args:
-        vector (np.ndarray): Vector to analyze
-        
-    Returns:
-        str: Detected vector type ("binary", "bipolar", or "continuous")
-    """
-    # Check if binary (0s and 1s)
-    if np.all(np.logical_or(vector == 0, vector == 1)):
-        return "binary"
-    # Check if bipolar (-1s and 1s)
-    elif np.all(np.logical_or(vector == -1, vector == 1)):
-        return "bipolar"
-    # Default to continuous
-    else:
-        return "continuous"
-
-def matches(fact: Fact, antecedent: str, store: VectorStore) -> Tuple[bool, float]:
-    """
-    Check if a fact matches an antecedent condition using vector similarity.
-    
-    Args:
-        fact (Dict): Fact representation to check against the antecedent
-        antecedent (str): The antecedent text or identifier to match
-        store (Dict): Vector store for similarity comparisons
-        
-    Returns:
-        Tuple[bool, float]: A tuple containing (match_result, similarity_score)
-    """
-    # First try vector-based matching if vectors are available
-    if "vector" in fact and store is not None:
-        fact_vector = fact.get("vector")
-        
-        # Find antecedent vector in store
-        antecedent_vector = None
-        antecedent_id = None
-        
-        # First try direct identifier match
-        for concept_id, concept_data in store.get("concepts", {}).items():
-            # Check if antecedent is directly in the identifier
-            if antecedent.lower() in concept_id.lower():
-                antecedent_id = concept_id
-                antecedent_vector = concept_data.get("vector")
-                break
-        
-        # If no direct match, try text-based search in metadata
-        if antecedent_vector is None:
-            for concept_id, concept_data in store.get("concepts", {}).items():
-                concept_text = concept_data.get("metadata", {}).get("text", "").lower()
-                if antecedent.lower() in concept_text:
-                    antecedent_id = concept_id
-                    antecedent_vector = concept_data.get("vector")
-                    break
-        
-        # If we found an antecedent vector, check similarity
-        if antecedent_vector is not None:
-            similarity = calculate_similarity(fact_vector, antecedent_vector)
-            match_result = similarity >= DEFAULT_SIMILARITY_THRESHOLD
-            logger.debug(f"Vector similarity between fact and antecedent: {similarity:.4f} (threshold: {DEFAULT_SIMILARITY_THRESHOLD})")
-            return match_result, similarity
-    
-    # Fallback to text-based matching
-    fact_text = fact.get("attributes", {}).get("fact_text", "").lower()
-    fact_id = fact.get("identifier", "").lower()
-    
-    # Check if antecedent text appears in fact text or identifier
-    if antecedent.lower() in fact_text or antecedent.lower() in fact_id:
-        logger.debug(f"Text match between fact and antecedent")
-        return True, 1.0
-    
-    # Check specific attributes if available (domain-specific matching)
-    # This is a fallback when vector matching fails
-    fact_attributes = fact.get("attributes", {})
-    assessment = fact_attributes.get("assessment", "").lower()
-    metric_type = fact_attributes.get("metric_type", "").lower()
-    
-    # Simple attribute-based matching patterns
-    patterns = [
-        # PE ratio conditions
-        (lambda: "pe ratio" in antecedent.lower() and "pe_ratio" in metric_type,
-         lambda: ("low" in antecedent.lower() and "low" in assessment) or 
-                 ("high" in antecedent.lower() and "high" in assessment)),
-        
-        # Revenue growth conditions
-        (lambda: "revenue growth" in antecedent.lower() and "revenue_growth" in metric_type,
-         lambda: ("high" in antecedent.lower() and "high" in assessment) or
-                 ("low" in antecedent.lower() and "low" in assessment) or
-                 ("negative" in antecedent.lower() and "negative" in assessment)),
-        
-        # Profit margin conditions
-        (lambda: "profit margin" in antecedent.lower() and "profit_margin" in metric_type,
-         lambda: ("high" in antecedent.lower() and "high" in assessment) or
-                 ("low" in antecedent.lower() and "low" in assessment)),
-    ]
-    
-    for condition_check, match_check in patterns:
-        if condition_check() and match_check():
-            logger.debug(f"Attribute match between {metric_type}:{assessment} and {antecedent.lower()}")
-            return True, 0.9  # High but not perfect confidence for attribute matching
-    
-    return False, 0.0
-
-def apply_modus_ponens_vector(rule_vector: Vector, fact_vector: Vector, 
-                            vector_dim: int = 10000) -> Vector:
-    """
-    Apply modus ponens using vector operations: If P→Q and P, then Q.
-    
-    Args:
-        rule_vector (np.ndarray): Vector representation of the conditional rule (P→Q)
-        fact_vector (np.ndarray): Vector representation of the fact (P)
-        vector_dim (int, optional): Dimensionality for generating vectors if needed.
-                                   Defaults to 10000.
-        
-    Returns:
-        np.ndarray: Vector representing the conclusion (Q)
-    """
-    # In vector symbolic architectures, modus ponens can be approximated by:
-    # Q ≈ (P→Q) ⊛ P where ⊛ is circular convolution (or appropriate operation)
-    # This is a simplification, but provides a reasonable approximation
-    
-    vector_type = detect_vector_type(rule_vector)
-    binding_method = "xor" if vector_type == "binary" else "convolution"
-    
-    # Extract Q from the rule by unbinding P
-    conclusion_vector = unbind_vectors(rule_vector, fact_vector, binding_method)
-    
-    # For continuous vectors, normalization is important
-    if vector_type == "continuous":
-        conclusion_vector = normalize_vector(conclusion_vector)
-        
-    return conclusion_vector
-
-def apply_modus_ponens(rule: Rule, fact: Fact, store: VectorStore) -> Concept:
-    """
-    Apply modus ponens: If P→Q and P, then Q.
-    Implementation using vector operations when possible, with fallback to text matching.
-    
-    Args:
-        rule (Dict): Conditional rule representation (P→Q)
-        fact (Dict): Fact representation matching the antecedent (P)
-        store (Dict): Vector store for retrieving related vectors
-        
-    Returns:
-        Dict: Derived conclusion representation (Q) with certainty
-        
-    Raises:
-        ValueError: If the rule is not conditional or the fact doesn't match the antecedent
-    """
-    logger.info(f"Applying modus ponens with rule '{rule.get('identifier')}' to fact '{fact.get('identifier')}'")
-    
-    if not is_conditional(rule):
-        raise ValueError("Rule must be conditional for modus ponens")
-    
-    # Check if the fact matches the rule's antecedent
-    antecedent = extract_antecedent(rule)
-    match_result, similarity = matches(fact, antecedent, store)
-    
-    if not match_result:
-        raise ValueError(f"Fact '{fact.get('identifier')}' doesn't match antecedent '{antecedent}'")
-    
-    # Extract consequent
-    try:
-        consequent_text = extract_consequent(rule)
-        logger.info(f"Extracted consequent: '{consequent_text}'")
-    except ValueError as e:
-        logger.error(f"Failed to extract consequent: {str(e)}")
-        # Create a fallback consequent ID
-        consequent_text = f"derived_from_{rule.get('identifier')}_and_{fact.get('identifier')}"
-    
-    # Create the consequent identifier
-    consequent_id = create_identifier_from_text(consequent_text)
-    
-    # Try to use vector operations if vectors are available
-    rule_vector = rule.get("vector")
-    fact_vector = fact.get("vector")
-    vector_dim = 10000  # Default dimension
-    
-    if rule_vector is not None and fact_vector is not None:
-        try:
-            # Get vector dimension from existing vectors
-            vector_dim = rule_vector.shape[0]
+            antecedent = antecedent[3:].strip()
             
-            # Apply modus ponens using vector operations
-            conclusion_vector = apply_modus_ponens_vector(rule_vector, fact_vector, vector_dim)
-            logger.info(f"Generated conclusion vector using vector operations")
-        except Exception as e:
-            logger.warning(f"Vector operation failed: {str(e)}. Falling back to generation.")
-            # Fallback: generate a new vector for the conclusion
-            conclusion_vector = generate_vector(consequent_id, vector_dim)
-    else:
-        # If vectors aren't available, generate a vector for the conclusion
-        logger.info(f"Vectors not available, generating vector for conclusion")
-        
-        # Try to get dimension from store configuration
-        if store and "dimension" in store:
-            vector_dim = store["dimension"]
-        
-        conclusion_vector = generate_vector(consequent_id, vector_dim)
+        consequent = parts[1].strip().rstrip(".")
+        return antecedent, consequent
     
-    # Calculate certainty: min(certainty(P→Q), certainty(P)) × similarity
-    rule_certainty = rule.get("attributes", {}).get("certainty", 1.0)
-    fact_certainty = fact.get("attributes", {}).get("certainty", 1.0)
-    match_certainty = similarity  # Incorporate similarity as a certainty factor
-    certainty = min(rule_certainty, fact_certainty) * match_certainty
-    logger.info(f"Calculated certainty: min({rule_certainty}, {fact_certainty}) × {match_certainty} = {certainty}")
+    # Try to split on "implies", "results in", etc.
+    implies_terms = ["implies", "leads to", "results in", "causes"]
+    for term in implies_terms:
+        if term in rule_text.lower():
+            parts = rule_text.lower().split(term)
+            if len(parts) == 2:
+                return parts[0].strip(), parts[1].strip()
     
-    # Create consequent concept
-    consequent = {
-        "identifier": consequent_id,
-        "vector": conclusion_vector,
-        "type": "concept",
-        "attributes": {
-            "derived_from": [rule.get("identifier"), fact.get("identifier")],
-            "derivation_method": "modus_ponens",
-            "rule_text": rule.get("attributes", {}).get("rule_text", ""),
-            "fact_text": fact.get("attributes", {}).get("fact_text", ""),
-            "entity_id": fact.get("attributes", {}).get("entity_id", ""),
-            "source": "derived",
-            "derivation_pattern": "modus_ponens",
-            "certainty": certainty,
-            "text": consequent_text
-        }
-    }
-    
-    logger.info(f"Created conclusion: {consequent_id} with certainty {certainty}")
-    return consequent
+    # Not a recognizable rule format
+    raise ValueError(f"Could not parse rule: {rule_text}")
 
-def apply_conjunction_introduction_vector(fact_a_vector: Vector, fact_b_vector: Vector) -> Vector:
+def is_conditional(concept: Dict[str, Any]) -> bool:
     """
-    Apply conjunction introduction using vector operations: P, Q, therefore P∧Q.
+    Check if a concept is a conditional rule.
     
     Args:
-        fact_a_vector (np.ndarray): Vector representation of the first fact (P)
-        fact_b_vector (np.ndarray): Vector representation of the second fact (Q)
+        concept (Dict[str, Any]): Concept to check
         
     Returns:
-        np.ndarray: Vector representing the conjunction (P∧Q)
+        bool: True if the concept is a conditional rule
     """
-    # In vector symbolic architectures, conjunction can be represented by bundling
-    # the individual vectors (possibly with binding to role vectors, but we'll keep it simple)
+    attributes = concept.get("attributes", {})
     
-    # Bundle the vectors for P and Q
-    conjunction_vector = bundle_vectors([fact_a_vector, fact_b_vector])
+    # Check for explicit marking
+    if attributes.get("conditional", False):
+        return True
     
-    return conjunction_vector
-
-def apply_conjunction_introduction(fact_a: Fact, fact_b: Fact, store: VectorStore) -> Concept:
-    """
-    Apply conjunction introduction: P, Q, therefore P∧Q.
+    # Check for antecedent/consequent attributes
+    if "antecedent" in attributes and "consequent" in attributes:
+        return True
     
-    Args:
-        fact_a (Dict): First fact representation (P)
-        fact_b (Dict): Second fact representation (Q)
-        store (Dict): Vector store for retrieving related vectors
-        
-    Returns:
-        Dict: Derived conjunction representation (P∧Q) with certainty
-        
-    Raises:
-        ValueError: If either fact is invalid or incompatible for conjunction
-    """
-    logger.info(f"Applying conjunction introduction with facts '{fact_a.get('identifier')}' and '{fact_b.get('identifier')}'")
+    # Check type
+    if concept.get("type") == "rule":
+        return True
     
-    # Create conjunction identifier
-    conjunction_id = f"{fact_a.get('identifier')}_and_{fact_b.get('identifier')}"
+    # Check identifier pattern
+    if "_if_" in concept.get("identifier", ""):
+        return True
     
-    # Use vector operations if vectors are available
-    fact_a_vector = fact_a.get("vector")
-    fact_b_vector = fact_b.get("vector")
-    
-    if fact_a_vector is not None and fact_b_vector is not None:
-        try:
-            # Check vector dimensions match
-            if fact_a_vector.shape != fact_b_vector.shape:
-                raise ValueError("Fact vectors must have the same dimensions for conjunction")
-            
-            # Apply conjunction using vector operations
-            conjunction_vector = apply_conjunction_introduction_vector(fact_a_vector, fact_b_vector)
-            logger.info(f"Generated conjunction vector using vector operations")
-        except Exception as e:
-            logger.warning(f"Vector operation failed: {str(e)}. Falling back to generation.")
-            # Fallback: generate a new vector for the conjunction
-            vector_dim = fact_a_vector.shape[0]
-            conjunction_vector = generate_vector(conjunction_id, vector_dim)
-    else:
-        # If vectors aren't available, generate a vector for the conjunction
-        logger.info(f"Vectors not available, generating vector for conjunction")
-        vector_dim = 10000  # Default dimension
-        
-        # Try to get dimension from store configuration
-        if store and "dimension" in store:
-            vector_dim = store["dimension"]
-            
-        conjunction_vector = generate_vector(conjunction_id, vector_dim)
-    
-    # Calculate certainty: min(certainty(P), certainty(Q))
-    fact_a_certainty = fact_a.get("attributes", {}).get("certainty", 1.0)
-    fact_b_certainty = fact_b.get("attributes", {}).get("certainty", 1.0)
-    certainty = min(fact_a_certainty, fact_b_certainty)
-    logger.info(f"Calculated certainty: min({fact_a_certainty}, {fact_b_certainty}) = {certainty}")
-    
-    # Create conjunction concept
-    conjunction = {
-        "identifier": conjunction_id,
-        "vector": conjunction_vector,
-        "type": "concept",
-        "attributes": {
-            "components": [fact_a.get("identifier"), fact_b.get("identifier")],
-            "entity_id": fact_a.get("attributes", {}).get("entity_id", 
-                        fact_b.get("attributes", {}).get("entity_id", "")),
-            "source": "derived",
-            "derivation_pattern": "conjunction_introduction",
-            "fact_a_text": fact_a.get("attributes", {}).get("fact_text", ""),
-            "fact_b_text": fact_b.get("attributes", {}).get("fact_text", ""),
-            "certainty": certainty,
-            "text": f"{fact_a.get('attributes', {}).get('fact_text', '')} and {fact_b.get('attributes', {}).get('fact_text', '')}"
-        }
-    }
-    
-    logger.info(f"Created conjunction: {conjunction_id} with certainty {certainty}")
-    return conjunction
-
-def create_identifier_from_text(text: str) -> str:
-    """
-    Create a normalized identifier from text.
-    
-    Args:
-        text (str): Text to convert to an identifier
-        
-    Returns:
-        str: Normalized identifier with spaces replaced by underscores,
-             special characters removed, and truncated if too long
-    """
-    # Replace non-alphanumeric chars (except spaces) with empty string
-    identifier = "".join(c for c in text if c.isalnum() or c.isspace())
-    
-    # Convert to lowercase and replace spaces with underscores
-    identifier = identifier.lower().replace(" ", "_")
-    
-    # Truncate if too long
-    max_length = 50
-    if len(identifier) > max_length:
-        identifier = identifier[:max_length]
-    
-    return identifier
+    # Not a conditional
+    return False
 
 def calculate_certainty(evidence_certainties: List[float], method: str = "min") -> float:
     """
     Calculate overall certainty from multiple pieces of evidence.
     
     Args:
-        evidence_certainties (List[float]): List of certainty values from different evidence sources
-        method (str, optional): Method to use for combining certainties. Options include:
-                              "min" (conservative), "product" (independent probabilities),
-                              "noisy_or" (redundant evidence), or "weighted" (weighted average).
-                              Defaults to "min".
+        evidence_certainties (List[float]): List of certainty values for different evidence
+        method (str): Method for combining certainties ("min", "product", "noisy_or", "weighted")
         
     Returns:
         float: Combined certainty value between 0 and 1
         
     Raises:
-        ValueError: If an invalid combination method is specified or if evidence_certainties is empty
+        ValueError: If evidence_certainties is empty or method is invalid
     """
     if not evidence_certainties:
         raise ValueError("Cannot calculate certainty from empty evidence list")
@@ -555,21 +174,16 @@ def recalibrate_certainty(raw_certainty: float, context: Dict[str, Any], method:
     
     Args:
         raw_certainty (float): Initial certainty value between 0 and 1
-        context (Dict[str, Any]): Contextual information that might influence calibration,
-                                such as domain knowledge or historical accuracy
-        method (str, optional): Recalibration method to use. Options include:
-                              "linear" (simple scaling), "sigmoid" (compress extremes),
-                              "expert" (use context-specific calibration rules),
-                              or "historical" (based on past accuracy).
-                              Defaults to "linear".
+        context (Dict[str, Any]): Contextual information for calibration
+        method (str): Recalibration method ("linear", "sigmoid", "expert", "historical")
         
     Returns:
         float: Recalibrated certainty value between 0 and 1
         
     Raises:
-        ValueError: If raw_certainty is outside [0,1] or an invalid method is specified
+        ValueError: If raw_certainty is outside [0,1] or method is invalid
     """
-    if raw_certainty < 0 or raw_certainty > 1:
+    if not (0 <= raw_certainty <= 1):
         raise ValueError(f"Raw certainty must be between 0 and 1, got {raw_certainty}")
     
     if method == "linear":
@@ -584,10 +198,10 @@ def recalibrate_certainty(raw_certainty: float, context: Dict[str, Any], method:
     elif method == "sigmoid":
         # Sigmoid function to compress extremes
         # f(x) = 1 / (1 + e^(-k * (x - x0)))
+        import math
         steepness = context.get("steepness", 10.0)  # Controls how sharp the sigmoid is
         midpoint = context.get("midpoint", 0.5)  # Value where sigmoid equals 0.5
         
-        import math
         result = 1.0 / (1.0 + math.exp(-steepness * (raw_certainty - midpoint)))
         return result
     
@@ -623,233 +237,422 @@ def recalibrate_certainty(raw_certainty: float, context: Dict[str, Any], method:
     else:
         raise ValueError(f"Invalid certainty recalibration method: {method}")
 
-def create_reasoning_chain(premises: List[Concept], pattern_sequence: List[Dict], store: VectorStore) -> Dict:
+def apply_modus_ponens(rule: Dict[str, Any], fact: Dict[str, Any], 
+                     role_vectors: Dict[str, np.ndarray],
+                     similarity_threshold: float = 0.7) -> Dict[str, Any]:
     """
-    Create a chain of reasoning using the specified patterns.
+    Apply modus ponens rule of inference: if P→Q and P, then Q.
     
     Args:
-        premises (list): List of initial premise representations to start reasoning from
-        pattern_sequence (list): List of reasoning patterns to apply in sequence, where each
-                                pattern is a dict specifying the pattern type and parameters
-        store (dict): Vector store for retrieving related vectors
+        rule (Dict[str, Any]): Rule representation (P→Q)
+        fact (Dict[str, Any]): Fact representation (P)
+        role_vectors (Dict[str, np.ndarray]): Role vectors for structured binding
+        similarity_threshold (float): Threshold for considering a match
         
     Returns:
-        dict: Final conclusion with full reasoning trace, including intermediate
-              conclusions and certainty values for each step
+        Dict[str, Any]: Derived conclusion (Q) with certainty
         
     Raises:
-        ValueError: If the premises are invalid or if any reasoning step fails
+        ValueError: If rule is not conditional or fact doesn't match antecedent
     """
-    if not premises:
-        raise ValueError("At least one premise is required for reasoning")
+    # Check if rule is conditional
+    if not is_conditional(rule):
+        raise ValueError("Rule must be conditional for modus ponens")
     
-    intermediate_results = premises.copy()
-    reasoning_steps = []
+    # Extract components
+    rule_vector = rule["vector"]
+    fact_vector = fact["vector"]
     
-    # Apply each reasoning pattern in sequence
-    for step_idx, pattern_info in enumerate(pattern_sequence):
-        pattern_type = pattern_info.get("pattern")
-        if not pattern_type:
-            raise ValueError(f"Missing pattern type in step {step_idx}")
-        
-        # Determine which function to call based on pattern type
-        if pattern_type == "modus_ponens":
-            if len(intermediate_results) < 2:
-                raise ValueError(f"Modus ponens requires at least two premises at step {step_idx}")
-            
-            # Find the rule and the matching fact
-            rule_idx = pattern_info.get("rule_idx", 0)
-            fact_idx = pattern_info.get("fact_idx", 1)
-            
-            if rule_idx >= len(intermediate_results) or fact_idx >= len(intermediate_results):
-                raise ValueError(f"Invalid indices for modus ponens at step {step_idx}")
-            
-            rule = intermediate_results[rule_idx]
-            fact = intermediate_results[fact_idx]
-            
-            # Apply modus ponens
-            try:
-                conclusion = apply_modus_ponens(rule, fact, store)
-                intermediate_results.append(conclusion)
-                
-                # Record the reasoning step
-                reasoning_steps.append({
-                    "step_id": step_idx,
-                    "pattern": "modus_ponens",
-                    "premises": [rule.get("identifier"), fact.get("identifier")],
-                    "conclusion": conclusion.get("identifier"),
-                    "certainty": conclusion.get("attributes", {}).get("certainty", 0.0)
-                })
-            except ValueError as e:
-                logger.error(f"Modus ponens failed at step {step_idx}: {str(e)}")
-                raise ValueError(f"Reasoning chain failed at step {step_idx}: {str(e)}") from e
-                
-        elif pattern_type == "conjunction_introduction":
-            if len(intermediate_results) < 2:
-                raise ValueError(f"Conjunction introduction requires at least two premises at step {step_idx}")
-            
-            # Find the facts to combine
-            fact_a_idx = pattern_info.get("fact_a_idx", 0)
-            fact_b_idx = pattern_info.get("fact_b_idx", 1)
-            
-            if fact_a_idx >= len(intermediate_results) or fact_b_idx >= len(intermediate_results):
-                raise ValueError(f"Invalid indices for conjunction introduction at step {step_idx}")
-            
-            fact_a = intermediate_results[fact_a_idx]
-            fact_b = intermediate_results[fact_b_idx]
-            
-            # Apply conjunction introduction
-            try:
-                conclusion = apply_conjunction_introduction(fact_a, fact_b, store)
-                intermediate_results.append(conclusion)
-                
-                # Record the reasoning step
-                reasoning_steps.append({
-                    "step_id": step_idx,
-                    "pattern": "conjunction_introduction",
-                    "premises": [fact_a.get("identifier"), fact_b.get("identifier")],
-                    "conclusion": conclusion.get("identifier"),
-                    "certainty": conclusion.get("attributes", {}).get("certainty", 0.0)
-                })
-            except ValueError as e:
-                logger.error(f"Conjunction introduction failed at step {step_idx}: {str(e)}")
-                raise ValueError(f"Reasoning chain failed at step {step_idx}: {str(e)}") from e
-        else:
-            raise ValueError(f"Unknown reasoning pattern '{pattern_type}' at step {step_idx}")
+    # Extract conditional parts using role vectors
+    conditional_parts = extract_conditional_parts(rule_vector, role_vectors)
+    antecedent_vector = conditional_parts["antecedent"]
+    consequent_vector = conditional_parts["consequent"]
     
-    # Create the final reasoning result with trace
-    if not intermediate_results:
-        raise ValueError("Reasoning chain produced no results")
+    # Check if fact matches antecedent using vector similarity
+    similarity = calculate_similarity(fact_vector, antecedent_vector)
     
-    final_conclusion = intermediate_results[-1]
+    if similarity < similarity_threshold:
+        raise ValueError(f"Fact doesn't match rule antecedent (similarity: {similarity:.4f})")
     
-    reasoning_result = {
-        "conclusion": final_conclusion,
-        "certainty": final_conclusion.get("attributes", {}).get("certainty", 0.0),
-        "trace": {
-            "premises": [p.get("identifier") for p in premises],
-            "steps": reasoning_steps,
-            "intermediate_results": [r.get("identifier") for r in intermediate_results]
-        }
+    # Create a unique ID for the conclusion
+    conclusion_id = str(uuid.uuid4())[:8]
+    entity_id = fact["attributes"].get("entity_id", "")
+    if entity_id:
+        conclusion_id = f"{entity_id}_conclusion_{conclusion_id}"
+    
+    # Extract or create text representation for the conclusion
+    conclusion_text = rule["attributes"].get("consequent", "")
+    
+    # Calculate certainty: min(certainty(rule), certainty(fact)) * similarity
+    rule_certainty = rule["attributes"].get("certainty", 1.0)
+    fact_certainty = fact["attributes"].get("certainty", 1.0)
+    conclusion_certainty = min(rule_certainty, fact_certainty) * similarity
+    
+    # Create conclusion representation
+    conclusion = {
+        "identifier": conclusion_id,
+        "type": "conclusion",
+        "vector": consequent_vector,
+        "attributes": {
+            "text": conclusion_text,
+            "certainty": conclusion_certainty,
+            "derived_from": [rule["identifier"], fact["identifier"]],
+            "derivation_pattern": "modus_ponens",
+            "similarity": similarity,
+            "entity_id": entity_id
+        },
+        "timestamp": datetime.now().isoformat()
     }
     
-    return reasoning_result
+    return conclusion
 
-def generate_explanation(conclusion: Concept, reasoning_steps: List[Dict], store: VectorStore) -> str:
+def apply_modus_tollens(rule: Dict[str, Any], negated_fact: Dict[str, Any], 
+                       role_vectors: Dict[str, np.ndarray],
+                       similarity_threshold: float = 0.7) -> Dict[str, Any]:
+    """
+    Apply modus tollens rule of inference: if P→Q and ¬Q, then ¬P.
+    
+    Args:
+        rule (Dict[str, Any]): Rule representation (P→Q)
+        negated_fact (Dict[str, Any]): Negated fact representation (¬Q)
+        role_vectors (Dict[str, np.ndarray]): Role vectors for structured binding
+        similarity_threshold (float): Threshold for considering a match
+        
+    Returns:
+        Dict[str, Any]: Derived conclusion (¬P) with certainty
+        
+    Raises:
+        ValueError: If rule is not conditional or negated fact doesn't match consequent
+    """
+    # Check if rule is conditional
+    if not is_conditional(rule):
+        raise ValueError("Rule must be conditional for modus tollens")
+    
+    # Extract components
+    rule_vector = rule["vector"]
+    negated_fact_vector = negated_fact["vector"]
+    
+    # Extract conditional parts using role vectors
+    conditional_parts = extract_conditional_parts(rule_vector, role_vectors)
+    antecedent_vector = conditional_parts["antecedent"]
+    consequent_vector = conditional_parts["consequent"]
+    
+    # Check if negated fact matches negation of consequent
+    # For simple vector representations, we can approximate negation by calculating
+    # similarity to the complement of the consequent vector
+    complementary_consequent = -consequent_vector  # Simple approximation of negation
+    similarity = calculate_similarity(negated_fact_vector, complementary_consequent)
+    
+    if similarity < similarity_threshold:
+        raise ValueError(f"Negated fact doesn't match negation of consequent (similarity: {similarity:.4f})")
+    
+    # Create a unique ID for the conclusion
+    conclusion_id = str(uuid.uuid4())[:8]
+    entity_id = negated_fact["attributes"].get("entity_id", "")
+    if entity_id:
+        conclusion_id = f"{entity_id}_conclusion_{conclusion_id}"
+    
+    # Calculate negation of antecedent vector
+    # Simple approximation of negation
+    negated_antecedent_vector = -antecedent_vector
+    
+    # Calculate certainty: min(certainty(rule), certainty(negated_fact)) * similarity
+    rule_certainty = rule["attributes"].get("certainty", 1.0)
+    fact_certainty = negated_fact["attributes"].get("certainty", 1.0)
+    conclusion_certainty = min(rule_certainty, fact_certainty) * similarity
+    
+    # Create conclusion representation
+    conclusion = {
+        "identifier": conclusion_id,
+        "type": "conclusion",
+        "vector": negated_antecedent_vector,
+        "attributes": {
+            "text": f"Not {rule['attributes'].get('antecedent', '')}",
+            "certainty": conclusion_certainty,
+            "derived_from": [rule["identifier"], negated_fact["identifier"]],
+            "derivation_pattern": "modus_tollens",
+            "similarity": similarity,
+            "entity_id": entity_id
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    return conclusion
+
+def apply_conjunction_introduction(fact_a: Dict[str, Any], fact_b: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Apply conjunction introduction: P, Q, therefore P∧Q.
+    
+    Args:
+        fact_a (Dict[str, Any]): First fact representation (P)
+        fact_b (Dict[str, Any]): Second fact representation (Q)
+        
+    Returns:
+        Dict[str, Any]: Conjunction representation (P∧Q) with certainty
+    """
+    # Create a unique ID for the conjunction
+    conjunction_id = str(uuid.uuid4())[:8]
+    entity_id = fact_a["attributes"].get("entity_id") or fact_b["attributes"].get("entity_id", "")
+    if entity_id:
+        conjunction_id = f"{entity_id}_conjunction_{conjunction_id}"
+    
+    # Bundle the vectors to represent conjunction
+    fact_a_vector = fact_a["vector"]
+    fact_b_vector = fact_b["vector"]
+    conjunction_vector = bundle_vectors([fact_a_vector, fact_b_vector])
+    
+    # Calculate certainty: min(certainty(P), certainty(Q))
+    fact_a_certainty = fact_a["attributes"].get("certainty", 1.0)
+    fact_b_certainty = fact_b["attributes"].get("certainty", 1.0)
+    conjunction_certainty = min(fact_a_certainty, fact_b_certainty)
+    
+    # Extract text representations
+    fact_a_text = fact_a["attributes"].get("text", "")
+    fact_b_text = fact_b["attributes"].get("text", "")
+    conjunction_text = f"{fact_a_text} and {fact_b_text}"
+    
+    # Create conjunction representation
+    conjunction = {
+        "identifier": conjunction_id,
+        "type": "conjunction",
+        "vector": conjunction_vector,
+        "attributes": {
+            "text": conjunction_text,
+            "certainty": conjunction_certainty,
+            "components": [fact_a["identifier"], fact_b["identifier"]],
+            "derivation_pattern": "conjunction_introduction",
+            "entity_id": entity_id
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    return conjunction
+
+def create_reasoning_chain(initial_premises: List[Dict[str, Any]], 
+                         rules: List[Dict[str, Any]],
+                         role_vectors: Dict[str, np.ndarray],
+                         max_depth: int = 3,
+                         similarity_threshold: float = 0.7) -> Dict[str, Any]:
+    """
+    Create a bounded reasoning chain by applying rules to premises.
+    
+    Args:
+        initial_premises (List[Dict[str, Any]]): Initial facts/premises
+        rules (List[Dict[str, Any]]): Rules to apply
+        role_vectors (Dict[str, np.ndarray]): Role vectors for structural binding
+        max_depth (int): Maximum reasoning depth to prevent infinite chains
+        similarity_threshold (float): Threshold for considering a match
+        
+    Returns:
+        Dict[str, Any]: Reasoning result with conclusions and trace
+    """
+    # Initialize reasoning state
+    depth = 0
+    derived_facts = initial_premises.copy()  # Start with initial premises
+    reasoning_steps = []  # Track reasoning steps
+    used_derivations = set()  # Track which derivations have been used (to prevent cycles)
+    
+    # Continue deriving until we reach max depth or no new facts can be derived
+    while depth < max_depth:
+        new_facts = []  # New facts derived in this iteration
+        
+        # Try to apply each rule to each fact
+        for rule in rules:
+            if not is_conditional(rule):
+                continue  # Skip non-conditional rules
+                
+            for fact in derived_facts:
+                # Create a derivation signature to prevent cycles
+                derivation_sig = f"{rule['identifier']}_{fact['identifier']}"
+                if derivation_sig in used_derivations:
+                    continue  # Skip if this derivation has been used before
+                
+                try:
+                    # Try to apply modus ponens
+                    conclusion = apply_modus_ponens(rule, fact, role_vectors, similarity_threshold)
+                    
+                    # Record the reasoning step
+                    step = {
+                        "step_id": len(reasoning_steps) + 1,
+                        "pattern": "modus_ponens",
+                        "premises": [rule["identifier"], fact["identifier"]],
+                        "conclusion": conclusion["identifier"],
+                        "certainty": conclusion["attributes"]["certainty"]
+                    }
+                    reasoning_steps.append(step)
+                    
+                    # Add to new facts and mark derivation as used
+                    new_facts.append(conclusion)
+                    used_derivations.add(derivation_sig)
+                except ValueError:
+                    # Rule doesn't apply, continue to next fact
+                    pass
+        
+        # If no new facts were derived, we've reached a fixed point
+        if not new_facts:
+            break
+            
+        # Add new facts to the set of derived facts for next iteration
+        derived_facts.extend(new_facts)
+        depth += 1
+    
+    # Prepare the result
+    final_conclusions = []
+    
+    # Extract final conclusions (those that weren't used as premises for further derivation)
+    for fact in derived_facts:
+        # A fact is a final conclusion if it was derived (not an initial premise)
+        # and it wasn't used as a premise for further derivation
+        if "derived_from" in fact["attributes"] and fact["identifier"] not in [
+            premise for step in reasoning_steps for premise in step["premises"]
+        ]:
+            final_conclusions.append(fact)
+    
+    # Create reasoning result
+    result = {
+        "depth": depth,
+        "steps": reasoning_steps,
+        "conclusions": final_conclusions,
+        "all_derived_facts": derived_facts,
+        "termination_reason": "fixed_point" if depth < max_depth else "max_depth_reached"
+    }
+    
+    return result
+
+def classify_conclusion(conclusion: Dict[str, Any], signal_vectors: Dict[str, np.ndarray]) -> str:
+    """
+    Classify a conclusion as positive, negative, or neutral based on vector similarity.
+    
+    Args:
+        conclusion (Dict[str, Any]): Conclusion to classify
+        signal_vectors (Dict[str, np.ndarray]): Reference vectors for signal types
+        
+    Returns:
+        str: Signal type ("positive", "negative", or "neutral")
+    """
+    if "vector" not in conclusion:
+        return "neutral"  # No vector to classify
+        
+    # Calculate similarity to each signal vector
+    conclusion_vector = conclusion["vector"]
+    similarities = {}
+    
+    for signal_type, signal_vector in signal_vectors.items():
+        similarity = calculate_similarity(conclusion_vector, signal_vector)
+        similarities[signal_type] = similarity
+    
+    # Find the most similar signal type
+    max_signal = max(similarities.items(), key=lambda x: x[1])
+    
+    # Map signal vector names to standard output types
+    signal_map = {
+        "positive": "positive",
+        "negative": "negative",
+        "neutral": "neutral",
+        "vector_positive": "positive",
+        "vector_negative": "negative",
+        "vector_neutral": "neutral"
+    }
+    
+    return signal_map.get(max_signal[0], "neutral")
+
+def generate_explanation(conclusions: List[Dict[str, Any]], 
+                       reasoning_steps: List[Dict[str, Any]],
+                       concepts: Dict[str, Dict[str, Any]]) -> str:
     """
     Generate a natural language explanation of the reasoning process.
     
     Args:
-        conclusion (Dict): The final conclusion concept
-        reasoning_steps (List[Dict]): List of reasoning steps that led to the conclusion
-        store (Dict): Vector store for retrieving related concepts
+        conclusions (List[Dict[str, Any]]): Final conclusions
+        reasoning_steps (List[Dict[str, Any]]): Steps in the reasoning process
+        concepts (Dict[str, Dict[str, Any]]): Dictionary of all concepts by identifier
         
     Returns:
-        str: Natural language explanation of the reasoning process
+        str: Natural language explanation
     """
-    if not reasoning_steps:
-        # This is a base concept without derived reasoning
-        concept_text = conclusion.get("attributes", {}).get("text", conclusion.get("identifier", ""))
-        certainty = conclusion.get("attributes", {}).get("certainty", 1.0)
-        certainty_text = f"{certainty:.1%}" if certainty < 1.0 else "high"
+    # Start with an introduction based on the conclusions
+    explanation_lines = []
+    
+    if not conclusions:
+        return "No conclusions were derived from the available information."
+    
+    # Sort conclusions by certainty (highest first)
+    sorted_conclusions = sorted(
+        conclusions, key=lambda c: c["attributes"].get("certainty", 0.0), reverse=True
+    )
+    
+    # Introduce the main conclusion
+    main_conclusion = sorted_conclusions[0]
+    certainty = main_conclusion["attributes"].get("certainty", 0.0)
+    certainty_percent = int(certainty * 100)
+    
+    explanation_lines.append(
+        f"Based on the analysis, I've determined that {main_conclusion['attributes'].get('text', '')} "
+        f"with {certainty_percent}% certainty."
+    )
+    
+    # Add reasoning steps
+    if reasoning_steps:
+        explanation_lines.append("\nThis conclusion is based on the following reasoning:")
         
-        return f"The system determined: {concept_text}, with {certainty_text} certainty."
-    
-    # Build explanation from reasoning steps
-    explanation = [f"Based on the available information, the system reached the following conclusion:"]
-    explanation.append("")
-    
-    # Add the final conclusion first
-    concept_text = conclusion.get("attributes", {}).get("text", conclusion.get("identifier", ""))
-    certainty = conclusion.get("attributes", {}).get("certainty", 1.0)
-    explanation.append(f"CONCLUSION: {concept_text} (Certainty: {certainty:.1%})")
-    explanation.append("")
-    explanation.append("This was determined through the following reasoning process:")
-    
-    # Add each reasoning step
-    for step_idx, step in enumerate(reasoning_steps):
-        pattern = step.get("pattern", "unknown")
-        conclusion_id = step.get("conclusion", "")
-        premise_ids = step.get("premises", [])
-        step_certainty = step.get("certainty", 0.0)
-        
-        # Get the text representations of premises and conclusion
-        premise_texts = []
-        for premise_id in premise_ids:
-            # Try to find the concept in the store
-            concept = None
-            if store is not None:
-                for concept_id, concept_data in store.get("concepts", {}).items():
-                    if concept_id == premise_id:
-                        concept = concept_data
-                        break
+        for step in reasoning_steps:
+            step_id = step["step_id"]
+            pattern = step["pattern"]
+            premises = step["premises"]
+            conclusion_id = step["conclusion"]
+            step_certainty = step.get("certainty", 0.0)
+            step_certainty_percent = int(step_certainty * 100)
             
-            if concept:
-                text = concept.get("metadata", {}).get("text", premise_id)
+            # Get premise texts
+            premise_texts = []
+            for premise_id in premises:
+                if premise_id in concepts:
+                    premise_text = concepts[premise_id]["attributes"].get("text", premise_id)
+                    premise_texts.append(premise_text)
+                else:
+                    premise_texts.append(premise_id)
+            
+            # Get conclusion text
+            conclusion_text = conclusion_id
+            if conclusion_id in concepts:
+                conclusion_text = concepts[conclusion_id]["attributes"].get("text", conclusion_id)
+            
+            # Format based on pattern
+            if pattern == "modus_ponens":
+                explanation_lines.append(
+                    f"Step {step_id}: Since \"{premise_texts[0]}\" and \"{premise_texts[1]}\", "
+                    f"I can conclude that \"{conclusion_text}\" ({step_certainty_percent}% certainty)."
+                )
+            elif pattern == "conjunction_introduction":
+                explanation_lines.append(
+                    f"Step {step_id}: Combining \"{premise_texts[0]}\" and \"{premise_texts[1]}\", "
+                    f"I can state that \"{conclusion_text}\" ({step_certainty_percent}% certainty)."
+                )
+            elif pattern == "modus_tollens":
+                explanation_lines.append(
+                    f"Step {step_id}: Since \"{premise_texts[0]}\" and not \"{premise_texts[1]}\", "
+                    f"I can conclude that not \"{conclusion_text}\" ({step_certainty_percent}% certainty)."
+                )
             else:
-                text = premise_id
-            premise_texts.append(text)
-        
-        # Get the conclusion text
-        conclusion_text = conclusion_id
-        if store is not None:
-            for concept_id, concept_data in store.get("concepts", {}).items():
-                if concept_id == conclusion_id:
-                    conclusion_text = concept_data.get("metadata", {}).get("text", conclusion_id)
-                    break
-        
-        # Format the step explanation based on the pattern
-        if pattern == "modus_ponens":
-            explanation.append(f"Step {step_idx+1}: Applied modus ponens (If P then Q, P is true, therefore Q is true)")
-            explanation.append(f"  * Rule: {premise_texts[0]}")
-            explanation.append(f"  * Fact: {premise_texts[1]}")
-            explanation.append(f"  * Therefore: {conclusion_text} (Certainty: {step_certainty:.1%})")
-        elif pattern == "conjunction_introduction":
-            explanation.append(f"Step {step_idx+1}: Applied conjunction (P is true, Q is true, therefore P and Q are true)")
-            explanation.append(f"  * Fact 1: {premise_texts[0]}")
-            explanation.append(f"  * Fact 2: {premise_texts[1]}")
-            explanation.append(f"  * Therefore: {conclusion_text} (Certainty: {step_certainty:.1%})")
-        else:
-            explanation.append(f"Step {step_idx+1}: Applied {pattern}")
-            explanation.append(f"  * Premises: {', '.join(premise_texts)}")
-            explanation.append(f"  * Conclusion: {conclusion_text} (Certainty: {step_certainty:.1%})")
-        
-        explanation.append("")
+                explanation_lines.append(
+                    f"Step {step_id}: From {', '.join(premise_texts)}, "
+                    f"I derived \"{conclusion_text}\" ({step_certainty_percent}% certainty)."
+                )
     
-    return "\n".join(explanation)
-
-def record_reasoning_step(
-    pattern: str, 
-    premises: List[str], 
-    conclusion: str, 
-    certainty: float, 
-    step_id: Optional[int] = None
-) -> Dict:
-    """
-    Record a reasoning step for explanation purposes.
-    
-    Args:
-        pattern (str): Reasoning pattern used (e.g., "modus_ponens", "conjunction")
-        premises (List[str]): List of premise identifiers used in the reasoning step
-        conclusion (str): Derived conclusion identifier
-        certainty (float): Calculated certainty for the conclusion
-        step_id (int, optional): Optional step identifier. If None, a UUID will be generated.
-                               Defaults to None.
+    # Add additional conclusions if there are multiple
+    if len(sorted_conclusions) > 1:
+        explanation_lines.append("\nAdditional conclusions:")
         
-    Returns:
-        Dict: Dictionary containing the reasoning step information
-    """
-    if step_id is None:
-        # Generate a unique step ID if none provided
-        step_id = str(uuid.uuid4())
+        for i, conclusion in enumerate(sorted_conclusions[1:], 1):
+            if i >= 3:  # Limit to top 3 additional conclusions
+                break
+                
+            conclusion_text = conclusion["attributes"].get("text", "")
+            conclusion_certainty = conclusion["attributes"].get("certainty", 0.0)
+            conclusion_certainty_percent = int(conclusion_certainty * 100)
+            
+            explanation_lines.append(
+                f"- {conclusion_text} ({conclusion_certainty_percent}% certainty)"
+            )
     
-    step = {
-        "step_id": step_id,
-        "pattern": pattern,
-        "premises": premises,
-        "conclusion": conclusion,
-        "certainty": certainty,
-        "timestamp": str(uuid.uuid1())  # Include a timestamp for ordering
-    }
-    
-    return step
+    return "\n".join(explanation_lines)

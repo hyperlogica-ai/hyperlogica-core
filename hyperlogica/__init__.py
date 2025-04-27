@@ -11,7 +11,7 @@ __version__ = "0.1.0"
 from .config_parser import parse_input_config, validate_config
 from .vector_operations import (
     generate_vector, normalize_vector, bind_vectors, unbind_vectors, 
-    bundle_vectors, calculate_similarity, cleanse_vector
+    bundle_vectors, calculate_similarity
 )
 from .vector_store import create_store, add_vector, get_vector, find_similar_vectors
 from .llm_interface import convert_english_to_acep, convert_acep_to_english, generate_explanation

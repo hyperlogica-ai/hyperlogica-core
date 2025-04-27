@@ -1,55 +1,50 @@
 """
 Vector Store Module
 
-This module provides functions for storing and retrieving high-dimensional vectors
-using the FAISS library for efficient similarity search.
+Pure functional implementation of a vector store for high-dimensional vectors in Hyperlogica.
+All operations return new copies rather than modifying the original store.
 """
 
 import os
 import pickle
 import logging
+import copy
 import numpy as np
 import faiss
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
+
+# Import vector operations
+from .vector_operations import normalize_vector, calculate_similarity
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 def create_store(dimension: int, index_type: str = "flat") -> Dict[str, Any]:
     """
     Create a new vector store with FAISS.
     
     Args:
-        dimension (int): Dimensionality of vectors to be stored.
-        index_type (str, optional): Type of FAISS index to create. Options include "flat" for 
-                                    exact search, "ivf" for inverted file, or "hnsw" for 
-                                    hierarchical navigable small world graph. Defaults to "flat".
+        dimension (int): Dimensionality of vectors to be stored
+        index_type (str): Type of FAISS index ("flat", "ivf", or "hnsw")
         
     Returns:
-        dict: A dictionary containing the FAISS index and associated metadata, with structure:
-              {
-                  "index": faiss.Index,
-                  "dimension": int,
-                  "index_type": str,
-                  "concepts": dict,  # Maps identifiers to metadata
-                  "concept_ids": list  # Ordered list of identifiers
-              }
-        
-    Raises:
-        ValueError: If dimension is not positive or index_type is not supported.
+        Dict[str, Any]: A new vector store dictionary
     """
     if dimension <= 0:
         raise ValueError(f"Dimension must be positive, got {dimension}")
     
     if index_type not in ["flat", "ivf", "hnsw"]:
-        raise ValueError(f"Unsupported index type: {index_type}, must be one of: flat, ivf, hnsw")
+        raise ValueError(f"Unsupported index type: {index_type}")
     
     # Create appropriate index based on type
     if index_type == "flat":
-        index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity with normalized vectors
+        index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
     elif index_type == "ivf":
         # For IVF, we need a quantizer (flat index) and number of centroids
         quantizer = faiss.IndexFlatIP(dimension)
         nlist = 100  # Number of centroids - can be tuned
         index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
-        index.nprobe = 10  # Number of centroids to visit during search - can be tuned
+        # For an empty index, we can't train it yet
     elif index_type == "hnsw":
         # HNSW index for approximate search
         index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)  # 32 is M parameter
@@ -59,28 +54,35 @@ def create_store(dimension: int, index_type: str = "flat") -> Dict[str, Any]:
         "dimension": dimension,
         "index_type": index_type,
         "concepts": {},  # Maps identifiers to metadata
-        "concept_ids": []  # Ordered list of identifiers
+        "concept_ids": [],  # Ordered list of identifiers
+        "metadata": {
+            "created_at": None,  # Will be set when adding the first vector
+            "modified_at": None,  # Will be set when modifying the store
+            "vector_count": 0
+        }
     }
 
-def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metadata: Dict[str, Any]) -> bool:
+def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Add a vector to the store with metadata.
+    Add a vector to the store, returning a new store instance.
     
     Args:
-        store (dict): Vector store dictionary returned by create_store.
-        identifier (str): Unique identifier for the vector.
-        vector (np.ndarray): Vector to add to the store.
-        metadata (dict): Additional metadata to associate with the vector.
+        store (Dict[str, Any]): Vector store dictionary
+        identifier (str): Unique identifier for the vector
+        vector (np.ndarray): Vector to add to the store
+        metadata (Dict[str, Any]): Additional metadata to associate with the vector
         
     Returns:
-        bool: True if the vector was successfully added, False otherwise.
-        
-    Raises:
-        ValueError: If vector dimension doesn't match the store's dimension.
+        Dict[str, Any]: New store with the vector added
     """
+    import datetime
+    
     # Validate dimensions
     if vector.shape[0] != store["dimension"]:
         raise ValueError(f"Vector dimension {vector.shape[0]} doesn't match store dimension {store['dimension']}")
+    
+    # Create a deep copy of the store
+    new_store = copy.deepcopy(store)
     
     # Normalize vector (ensure unit length for cosine similarity)
     vector_norm = np.linalg.norm(vector)
@@ -89,61 +91,72 @@ def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metad
     
     normalized_vector = vector / vector_norm
     
+    # Update timestamps
+    current_time = datetime.datetime.now().isoformat()
+    if new_store["metadata"]["created_at"] is None:
+        new_store["metadata"]["created_at"] = current_time
+    new_store["metadata"]["modified_at"] = current_time
+    
     # Check if this identifier already exists
-    if identifier in store["concepts"]:
+    if identifier in new_store["concepts"]:
         # Update the metadata and vector
-        index = store["concept_ids"].index(identifier)
-        store["concepts"][identifier] = {
+        index = new_store["concept_ids"].index(identifier)
+        new_store["concepts"][identifier] = {
             "vector": normalized_vector,
             "metadata": metadata
         }
         
         # For most index types, we need to rebuild the index
         # This is inefficient for large stores, but necessary for correctness
-        if store["index_type"] != "flat":
+        if new_store["index_type"] != "flat":
             vectors = []
-            for concept_id in store["concept_ids"]:
-                vectors.append(store["concepts"][concept_id]["vector"])
+            for concept_id in new_store["concept_ids"]:
+                vectors.append(new_store["concepts"][concept_id]["vector"])
             
-            store["index"].reset()
+            new_store["index"].reset()
             if len(vectors) > 0:
-                store["index"].add(np.array(vectors))
+                # Don't use train() on empty index
+                vectors_array = np.array(vectors).astype('float32')
+                if new_store["index_type"] == "ivf" and not new_store["index"].is_trained:
+                    # For IVF, we need to train the index first (once)
+                    new_store["index"].train(vectors_array)
+                new_store["index"].add(vectors_array)
         else:
-            # For flat indices, we can just update the vector in place
-            store["index"].reset()
+            # For flat indices, we can rebuild it from scratch (still immutable)
             vectors = []
-            for concept_id in store["concept_ids"]:
-                vectors.append(store["concepts"][concept_id]["vector"])
-            store["index"].add(np.array(vectors))
+            for concept_id in new_store["concept_ids"]:
+                vectors.append(new_store["concepts"][concept_id]["vector"])
+            
+            new_store["index"] = faiss.IndexFlatIP(new_store["dimension"])
+            if vectors:
+                new_store["index"].add(np.array(vectors).astype('float32'))
     else:
         # Add new vector
-        store["concept_ids"].append(identifier)
-        store["concepts"][identifier] = {
+        new_store["concept_ids"].append(identifier)
+        new_store["concepts"][identifier] = {
             "vector": normalized_vector,
             "metadata": metadata
         }
-        store["index"].add(np.array([normalized_vector]))
+        new_store["metadata"]["vector_count"] += 1
+        
+        # Add to index
+        new_store["index"].add(np.array([normalized_vector]).astype('float32'))
     
-    return True
+    return new_store
 
 def get_vector(store: Dict[str, Any], identifier: str) -> Dict[str, Any]:
     """
     Retrieve a vector and its metadata by identifier.
     
     Args:
-        store (dict): Vector store dictionary.
-        identifier (str): Unique identifier for the vector to retrieve.
+        store (Dict[str, Any]): Vector store dictionary
+        identifier (str): Unique identifier for the vector to retrieve
         
     Returns:
-        dict: Dictionary containing the vector and its metadata, with structure:
-              {
-                  "identifier": str,
-                  "vector": np.ndarray,
-                  "metadata": dict
-              }
-              
+        Dict[str, Any]: Dictionary containing the vector and its metadata
+        
     Raises:
-        KeyError: If the identifier does not exist in the store.
+        KeyError: If the identifier does not exist in the store
     """
     if identifier not in store["concepts"]:
         raise KeyError(f"Identifier not found in store: {identifier}")
@@ -160,25 +173,12 @@ def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n:
     Find the most similar vectors to the query vector.
     
     Args:
-        store (dict): Vector store dictionary.
-        query_vector (np.ndarray): Vector to compare against the store.
-        top_n (int, optional): Number of most similar vectors to return. Defaults to 10.
+        store (Dict[str, Any]): Vector store dictionary
+        query_vector (np.ndarray): Vector to compare against the store
+        top_n (int): Number of most similar vectors to return
         
     Returns:
-        list: List of dictionaries containing the top_n most similar vectors and metadata,
-              ordered by decreasing similarity, with structure:
-              [
-                  {
-                      "identifier": str,
-                      "vector": np.ndarray,
-                      "metadata": dict,
-                      "similarity": float
-                  },
-                  ...
-              ]
-        
-    Raises:
-        ValueError: If query_vector dimension doesn't match the store's dimension.
+        List[Dict[str, Any]]: List of dictionaries containing similar vectors and metadata
     """
     # Validate dimensions
     if query_vector.shape[0] != store["dimension"]:
@@ -199,7 +199,7 @@ def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n:
     adjusted_top_n = min(top_n, len(store["concept_ids"]))
     
     # Search for similar vectors
-    distances, indices = store["index"].search(np.array([normalized_query]), adjusted_top_n)
+    distances, indices = store["index"].search(np.array([normalized_query]).astype('float32'), adjusted_top_n)
     
     # Process results
     results = []
@@ -223,21 +223,18 @@ def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n:
 
 def save_store(store: Dict[str, Any], path: str) -> bool:
     """
-    Save the vector store to disk.
+    Save the vector store to disk (functional wrapper around side-effectful operation).
     
     Args:
-        store (dict): Vector store dictionary to save.
-        path (str): File path where the store should be saved.
+        store (Dict[str, Any]): Vector store dictionary to save
+        path (str): File path where the store should be saved
         
     Returns:
-        bool: True if the store was successfully saved, False otherwise.
-        
-    Raises:
-        IOError: If the directory doesn't exist or isn't writable.
+        bool: True if the store was successfully saved, False otherwise
     """
     try:
         # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         
         # We need special handling for faiss indices which aren't pickle-able
         index = store["index"]
@@ -254,7 +251,7 @@ def save_store(store: Dict[str, Any], path: str) -> bool:
         
         return True
     except Exception as e:
-        logging.error(f"Failed to save vector store: {str(e)}")
+        logger.error(f"Failed to save vector store: {str(e)}")
         return False
 
 def load_store(path: str) -> Dict[str, Any]:
@@ -262,14 +259,14 @@ def load_store(path: str) -> Dict[str, Any]:
     Load a vector store from disk.
     
     Args:
-        path (str): File path from which to load the store.
+        path (str): File path from which to load the store
         
     Returns:
-        dict: The loaded vector store dictionary.
+        Dict[str, Any]: The loaded vector store dictionary
         
     Raises:
-        FileNotFoundError: If the specified file does not exist.
-        ValueError: If the file exists but does not contain a valid vector store.
+        FileNotFoundError: If the specified file does not exist
+        ValueError: If the file exists but does not contain a valid vector store
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Vector store file not found: {path}")
@@ -289,4 +286,35 @@ def load_store(path: str) -> Dict[str, Any]:
         return store
     except Exception as e:
         raise ValueError(f"Failed to load vector store: {str(e)}")
+
+def merge_stores(store_a: Dict[str, Any], store_b: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Merge two vector stores into a new store.
     
+    Args:
+        store_a (Dict[str, Any]): First vector store
+        store_b (Dict[str, Any]): Second vector store
+        
+    Returns:
+        Dict[str, Any]: New merged vector store
+        
+    Raises:
+        ValueError: If the stores have different dimensions
+    """
+    if store_a["dimension"] != store_b["dimension"]:
+        raise ValueError(f"Stores have different dimensions: {store_a['dimension']} vs {store_b['dimension']}")
+    
+    # Create a new store with the same configuration as store_a
+    merged_store = create_store(store_a["dimension"], store_a["index_type"])
+    
+    # Add vectors from store_a
+    for concept_id in store_a["concept_ids"]:
+        concept = store_a["concepts"][concept_id]
+        merged_store = add_vector(merged_store, concept_id, concept["vector"], concept["metadata"])
+    
+    # Add vectors from store_b (potentially overwriting if IDs clash)
+    for concept_id in store_b["concept_ids"]:
+        concept = store_b["concepts"][concept_id]
+        merged_store = add_vector(merged_store, concept_id, concept["vector"], concept["metadata"])
+    
+    return merged_store
