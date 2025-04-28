@@ -25,8 +25,7 @@ from .llm_interface import (
 # Main processing function
 from .hyperlogica import process_input_file
 
-# Ontology mapping components
+# Ontology mapping components - import only functions that exist
 from .ontology_mapper import (
-    create_ontology_mapper, map_text_to_ontology,
-    standardize_facts_with_ontology, enhance_reasoning_with_ontology
+    create_ontology_mapper, map_text_to_ontology
 )

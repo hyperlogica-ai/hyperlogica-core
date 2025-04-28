@@ -7,6 +7,7 @@ for stock analysis with improved term standardization.
 """
 
 import os
+import sys
 import json
 import argparse
 from dotenv import load_dotenv
@@ -19,6 +20,11 @@ if "OPENAI_API_KEY" in os.environ:
     print("OpenAI API key loaded successfully")
 else:
     print("WARNING: OpenAI API key not found in environment variables")
+
+# Add parent directory to path if necessary
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 # Import the enhanced hyperlogica modules
 from hyperlogica import process_input_file
@@ -33,6 +39,23 @@ def run_stock_analysis_with_ontology(config_path: str, output_path: str = None, 
         output_path: Path to save the results
         verbose: Whether to enable verbose output
     """
+    # Ensure config_path is an absolute path
+    if not os.path.isabs(config_path):
+        # First check if the path is relative to the current script directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        potential_path = os.path.join(script_dir, config_path)
+        
+        if os.path.exists(potential_path):
+            config_path = potential_path
+        else:
+            # Try relative to project root
+            project_root = os.path.abspath(os.path.join(script_dir, "../.."))
+            config_path = os.path.join(project_root, config_path)
+    
+    # Verify the file exists
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
     # Set up options
     options = {
         "verbose": verbose,
@@ -64,6 +87,23 @@ def demonstrate_ontology_mapping(config_path: str):
     Args:
         config_path: Path to the configuration file with ontology
     """
+    # Ensure config_path is an absolute path
+    if not os.path.isabs(config_path):
+        # First check if the path is relative to the current script directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        potential_path = os.path.join(script_dir, config_path)
+        
+        if os.path.exists(potential_path):
+            config_path = potential_path
+        else:
+            # Try relative to project root
+            project_root = os.path.abspath(os.path.join(script_dir, "../.."))
+            config_path = os.path.join(project_root, config_path)
+    
+    # Verify the file exists
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
     # Load the configuration with ontology
     with open(config_path, 'r') as f:
         config = json.load(f)
