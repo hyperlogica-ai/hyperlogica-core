@@ -22,27 +22,27 @@
           "PE_RATIO_NEUTRAL": ["at industry average", "similar to peers", "fair P/E ratio"]
         },
         "growth": {
-          "REVENUE_GROWTH_ACCELERATING": ["accelerating revenue", "increasing growth rate", "consecutive quarters of growth", "accelerated for quarters"],
-          "REVENUE_GROWTH_SLOWING": ["decelerating revenue", "slowing growth", "declining growth rate"],
+          "REVENUE_GROWTH_ACCELERATING": ["accelerating revenue", "increasing growth rate", "consecutive quarters of growth", "accelerated for quarters", "has accelerated for", "accelerated for the last"],
+          "REVENUE_GROWTH_SLOWING": ["decelerating revenue", "slowing growth", "declining growth rate", "growth has slowed"],
           "REVENUE_GROWTH_STABLE": ["stable revenue growth", "consistent growth", "steady growth rate"]
         },
         "profitability": {
-          "MARGINS_EXPANDING": ["expanding margins", "increased profit margins", "margin improvement", "margins have expanded"],
+          "MARGINS_EXPANDING": ["expanding margins", "increased profit margins", "margin improvement", "margins have expanded", "profit margins have expanded"],
           "MARGINS_CONTRACTING": ["contracting margins", "decreased profit margins", "margin deterioration", "margins have contracted"],
           "MARGINS_STABLE": ["stable margins", "consistent margins", "steady profit margins"]
         },
         "financial_health": {
-          "DEBT_DECREASING": ["decreasing debt", "lower debt levels", "reduced leverage", "debt-to-equity ratio has decreased"],
+          "DEBT_DECREASING": ["decreasing debt", "lower debt levels", "reduced leverage", "debt-to-equity ratio has decreased", "debt-to-equity ratio decreased"],
           "DEBT_INCREASING": ["increasing debt", "higher debt levels", "increased leverage", "debt-to-equity ratio has increased"],
           "DEBT_STABLE": ["stable debt", "consistent debt levels", "steady leverage", "debt-to-equity ratio has remained stable"]
         },
         "market_performance": {
-          "OUTPERFORMING_MARKET": ["outperforming market", "beating index", "outperforming S&P", "returned more than market"],
+          "OUTPERFORMING_MARKET": ["outperforming market", "beating index", "outperforming S&P", "returned more than market", "outperforming the S&P"],
           "UNDERPERFORMING_MARKET": ["underperforming market", "lagging index", "underperforming S&P", "returned less than market"],
           "MARKET_PERFORMANCE_NEUTRAL": ["performing with market", "in line with index", "tracking S&P", "returned similar to market"]
         },
         "analyst_sentiment": {
-          "ANALYST_POSITIVE": ["positive analyst ratings", "buy recommendations", "analysts positive", "high percentage of positive ratings"],
+          "ANALYST_POSITIVE": ["positive analyst ratings", "buy recommendations", "analysts positive", "high percentage of positive ratings", "analysts have a positive rating", "analysts have a buy rating"],
           "ANALYST_NEGATIVE": ["negative analyst ratings", "sell recommendations", "analysts negative", "low percentage of positive ratings"],
           "ANALYST_NEUTRAL": ["mixed analyst ratings", "hold recommendations", "analysts neutral", "moderate percentage of positive ratings"]
         }
@@ -50,10 +50,12 @@
       "term_mapping_rules": [
         {"regex": "P/?E\\s+ratio\\s+(is|of)\\s+[0-9.]+.*(below|under|less)\\s+(the\\s+)?(industry|sector)\\s+average", "ontology_term": "PE_RATIO_LOW"},
         {"regex": "revenue\\s+growth\\s+has\\s+accelerated\\s+for\\s+(several|[0-9]+)\\s+consecutive\\s+quarters", "ontology_term": "REVENUE_GROWTH_ACCELERATING"},
+        {"regex": "accelerated\\s+for\\s+(the\\s+last\\s+)?three\\s+consecutive\\s+quarters", "ontology_term": "REVENUE_GROWTH_ACCELERATING"},
         {"regex": "profit\\s+margins\\s+have\\s+expanded\\s+from\\s+[0-9.]+%\\s+to\\s+[0-9.]+%", "ontology_term": "MARGINS_EXPANDING"},
         {"regex": "debt-to-equity\\s+ratio\\s+has\\s+decreased", "ontology_term": "DEBT_DECREASING"},
         {"regex": "stock\\s+has\\s+returned\\s+[0-9.]+%.*compared\\s+to\\s+[0-9.]+%\\s+for\\s+the\\s+S&P", "ontology_term": "OUTPERFORMING_MARKET"},
-        {"regex": "[0-9.]+%\\s+of\\s+analysts\\s+have\\s+a\\s+positive\\s+rating", "ontology_term": "ANALYST_POSITIVE"}
+        {"regex": "returned\\s+20%.*outperforming\\s+the\\s+S&P", "ontology_term": "OUTPERFORMING_MARKET"},
+        {"regex": "[0-9.]+%\\s+of\\s+analysts\\s+have\\s+a\\s+(positive|buy)\\s+rating", "ontology_term": "ANALYST_POSITIVE"}
       ],
       "metric_definitions": [
         {
