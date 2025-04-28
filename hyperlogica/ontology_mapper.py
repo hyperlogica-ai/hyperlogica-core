@@ -25,7 +25,7 @@ def create_ontology_mapper(domain_config: Dict[str, Any]) -> Dict[str, Any]:
         Dict containing the initialized ontology mapper
     """
     domain = domain_config.get("domain", "general")
-    ontology = domain_config.get("ontology", {})
+    ontology = domain_config.get("finance_ontology", {})  # Changed from ontology to finance_ontology
         
     # Extract term mapping rules
     term_mapping_rules = domain_config.get("term_mapping_rules", [])
@@ -82,15 +82,17 @@ def build_phrase_to_term_map(ontology: Dict[str, Dict[str, List[str]]]) -> Dict[
     phrase_map = {}
     
     for category, terms in ontology.items():
-        for term, phrases in terms.items():
-            for phrase in phrases:
-                # Normalize the phrase (lowercase)
-                norm_phrase = phrase.lower()
-                phrase_map[norm_phrase] = term
+        if isinstance(terms, dict):  # Added check to ensure terms is a dictionary
+            for term, phrases in terms.items():
+                if isinstance(phrases, list):  # Added check to ensure phrases is a list
+                    for phrase in phrases:
+                        # Normalize the phrase (lowercase)
+                        norm_phrase = phrase.lower()
+                        phrase_map[norm_phrase] = term
     
     return phrase_map
 
-@lru_cache(maxsize=1024)
+# Removed lru_cache decorator to fix the unhashable dict issue
 def map_text_to_ontology(text: str, mapper: Dict[str, Any]) -> Tuple[Optional[str], float]:
     """
     Map a text string to a standardized ontology term.
@@ -103,12 +105,10 @@ def map_text_to_ontology(text: str, mapper: Dict[str, Any]) -> Tuple[Optional[st
         Tuple[Optional[str], float]: (mapped_term, confidence) or (None, 0.0) if no mapping found
     """
     # First try to match using regex patterns
-    for rule in mapper.get("term_mapping_rules", []):
-        pattern = rule.get("pattern")
-        if pattern and pattern.search(text):
-            ontology_term = rule.get("ontology_term")
-            logger.debug(f"Mapped text to ontology term {ontology_term} using regex pattern")
-            return ontology_term, 1.0  # High confidence for exact pattern match
+    for pattern, term in mapper.get("compiled_rules", []):
+        if pattern.search(text):
+            logger.debug(f"Mapped text to ontology term {term} using regex pattern")
+            return term, 1.0  # High confidence for exact pattern match
     
     # If no direct regex match, try to match using keywords from ontology
     ontology = mapper.get("ontology", {})
