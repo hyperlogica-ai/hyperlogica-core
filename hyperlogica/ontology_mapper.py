@@ -91,38 +91,66 @@ def build_phrase_to_term_map(ontology: Dict[str, Dict[str, List[str]]]) -> Dict[
     return phrase_map
 
 @lru_cache(maxsize=1024)
-def map_text_to_ontology(text: str, mapper: Dict[str, Any]) -> Tuple[str, float]:
+def map_text_to_ontology(text: str, mapper: Dict[str, Any]) -> Tuple[Optional[str], float]:
     """
-    Map natural language text to a standardized ontology term.
+    Map a text string to a standardized ontology term.
     
     Args:
-        text: Natural language text to map
-        mapper: The ontology mapper dictionary
+        text (str): Text to map to ontology
+        mapper (Dict[str, Any]): Configured ontology mapper
         
     Returns:
-        Tuple of (ontology_term, confidence)
+        Tuple[Optional[str], float]: (mapped_term, confidence) or (None, 0.0) if no mapping found
     """
-    # Try exact match in phrases
-    text_lower = text.lower()
-    phrase_to_term_map = mapper["phrase_to_term_map"]
+    # First try to match using regex patterns
+    for rule in mapper.get("term_mapping_rules", []):
+        pattern = rule.get("pattern")
+        if pattern and pattern.search(text):
+            ontology_term = rule.get("ontology_term")
+            logger.debug(f"Mapped text to ontology term {ontology_term} using regex pattern")
+            return ontology_term, 1.0  # High confidence for exact pattern match
     
-    # Check if any phrases are contained in the text
-    for phrase, term in phrase_to_term_map.items():
-        if phrase in text_lower:
-            confidence = 0.9  # High confidence for direct phrase match
-            logger.debug(f"Phrase match: '{phrase}' → {term} (confidence: {confidence})")
-            return term, confidence
+    # If no direct regex match, try to match using keywords from ontology
+    ontology = mapper.get("ontology", {})
+    best_match = None
+    best_confidence = 0.0
     
-    # Try regex pattern matching
-    for pattern, term in mapper["compiled_rules"]:
-        if pattern.search(text_lower):
-            confidence = 0.85  # Slightly lower confidence for pattern match
-            logger.debug(f"Pattern match: '{pattern.pattern}' → {term} (confidence: {confidence})")
-            return term, confidence
+    for category, term_dict in ontology.items():
+        # Make sure term_dict is iterable and contains key-value pairs
+        if not isinstance(term_dict, dict):
+            logger.warning(f"Expected dictionary for category {category}, got {type(term_dict)}")
+            continue
+            
+        for term, keywords in term_dict.items():
+            # Ensure term is hashable (string or other primitive type)
+            if not isinstance(term, (str, int, float, bool)):
+                logger.warning(f"Skipping non-hashable term type: {type(term)}")
+                continue
+                
+            # Ensure keywords is a list
+            if not isinstance(keywords, list):
+                logger.warning(f"Expected list of keywords for term {term}, got {type(keywords)}")
+                continue
+                
+            # Check how many keywords match in the text
+            matches = 0
+            for keyword in keywords:
+                if isinstance(keyword, str) and keyword.lower() in text.lower():
+                    matches += 1
+            
+            # Calculate confidence based on match ratio
+            if keywords and matches > 0:
+                confidence = matches / len(keywords)
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_match = term
     
-    # No match found
-    logger.debug(f"No ontology mapping found for: '{text}'")
-    return "", 0.0
+    if best_match:
+        logger.debug(f"Mapped text to ontology term {best_match} with confidence {best_confidence:.2f}")
+        return best_match, best_confidence
+    
+    logger.debug(f"No ontology mapping found for: {text[:50]}...")
+    return None, 0.0
 
 def map_text_to_ontology_with_llm(text: str, mapper: Dict[str, Any], 
                                   llm_interface: Any, llm_options: Dict[str, Any]) -> Tuple[str, float]:
