@@ -65,6 +65,7 @@ else:
 def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Convert English text to ACEP representation using an LLM and generate compositional vector.
+    Uses a controlled vocabulary from the ontology for consistent term usage.
     
     Args:
         text (str): English text to convert
@@ -94,50 +95,81 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
     entity_id = context.get("entity_id", "")
     vector_dim = context.get("vector_dimension", 10000)
     
-    # Create prompt for ACEP angle-bracket syntax
-    prompt = """
+    # Extract domain configuration with ontology from context
+    domain_config = context.get("domain_config", {})
+    finance_ontology = domain_config.get("finance_ontology", {})
+    
+    # Format the ontology for the prompt
+    ontology_terms = []
+    ontology_examples = []
+    
+    # Extract terms and provide examples for each category
+    for category, terms_dict in finance_ontology.items():
+        category_terms = []
+        for term, phrases in terms_dict.items():
+            ontology_terms.append(term)
+            if phrases and len(phrases) > 0:
+                category_terms.append(f"- {term}: {phrases[0]}")
+        
+        if category_terms:
+            ontology_examples.append(f"{category.upper()} CATEGORY:")
+            ontology_examples.extend(category_terms)
+    
+    # Format controlled vocab for the prompt
+    formatted_terms = "\n".join([f"- {term}" for term in ontology_terms])
+    formatted_examples = "\n".join(ontology_examples)
+    
+    # Create prompt for ACEP angle-bracket syntax with controlled vocabulary
+    prompt = f"""
     Convert this text to ACEP (AI Conceptual Exchange Protocol) representation using angle-bracket syntax:
     
-    Text: {0}
-    Domain: {1}
-    Entity: {2}
+    Text: {text}
+    Domain: {domain}
+    Entity: {entity_id}
+    
+    IMPORTANT: When creating the ACEP representation, ONLY use terms from the following controlled vocabulary:
+    
+    {formatted_terms}
+    
+    Here are examples of what these terms represent:
+    
+    {formatted_examples}
     
     For conditional statements (if-then), use the format:
-    <{{concept:condition}}> → <{{causal:{3}}}> → <{{concept:result}}>
+    <{{concept:ONTOLOGY_TERM_FOR_CONDITION}}> → <{{causal:{certainty}}}> → <{{concept:ONTOLOGY_TERM_FOR_RESULT}}>
     
     For facts or statements, use:
-    <{{concept:fact, certainty:{3}}}>
+    <{{concept:ONTOLOGY_TERM, certainty:{certainty}}}> 
     
-    Example for "If it rains, the ground gets wet":
-    <{{concept:rain}}> → <{{causal:0.9}}> → <{{concept:ground_wet}}>
+    Example for "If a company has low P/E ratio, then it is undervalued":
+    <{{concept:PE_RATIO_LOW}}> → <{{causal:0.9}}> → <{{concept:STOCK_UNDERVALUED}}>
     
-    Include all relevant attributes and ensure proper ACEP syntax with angle brackets.
+    Then parse this into structured JSON with the following format:
     
-    Then parse the conditional into structured parts and return a JSON with the 
-    antecedent, consequent, certainty, and a clean identifier. For example:
-    
-    ```json
     {{
-      "identifier": "ground_wet_if_rain",
+      "identifier": "unique_id_based_on_content",
       "type": "concept",
       "content": {{
-        "concept": "conditional_relationship"
+        "concept": "conditional_relationship" or "fact"
       }},
       "attributes": {{
-        "antecedent": "rain",
-        "consequent": "ground_wet",
-        "certainty": 0.9
+        "antecedent": "ONTOLOGY_TERM" (for conditional only),
+        "consequent": "ONTOLOGY_TERM" (for conditional only),
+        "certainty": {certainty},
+        "entity_id": "{entity_id}",
+        "domain": "{domain}",
+        "ontology_term": "THE_MAIN_ONTOLOGY_TERM_THAT_APPLIES",
+        "text": "{text}"
       }}
     }}
-    ```
-    """.format(text, domain, entity_id, certainty)
+    """
     
     # Configure API call
     model = llm_options.get("model", "gpt-4")
     temperature = llm_options.get("temperature", 0.0)
     max_tokens = llm_options.get("max_tokens", 2000)
     
-    logging.info(f"Converting to ACEP: {text[:50]}...")
+    logging.info(f"Converting to ACEP with controlled vocabulary: {text[:50]}...")
     
     try:
         # Make the API call
@@ -154,7 +186,7 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
         # Extract the response text containing ACEP angle-bracket notation
         acep_text = response.choices[0].message.content.strip()
         
-        # Log the full ACEP text - this is what we've added
+        # Log the full ACEP text
         logging.info(f"ACEP response for '{text[:30]}...': {acep_text}")
         
         # Try to parse JSON from the response
@@ -189,47 +221,87 @@ def convert_english_to_acep(text: str, context: Dict[str, Any], llm_options: Dic
         if acep_data and isinstance(acep_data, dict):
             # Use the parsed structure
             identifier = acep_data.get("identifier", identifier)
-            antecedent = acep_data.get("attributes", {}).get("antecedent", "")
-            consequent = acep_data.get("attributes", {}).get("consequent", "")
-            json_certainty = acep_data.get("attributes", {}).get("certainty", certainty)
             
-            # Log the parsed components
-            logging.info(f"Using parsed components - ID: {identifier}, Antecedent: {antecedent}, Consequent: {consequent}")
+            # Get the ontology term if available
+            ontology_term = acep_data.get("attributes", {}).get("ontology_term", "")
             
-            if antecedent and consequent:
-                # Generate component vectors
-                antecedent_vector = generate_vector(antecedent, dimension=vector_dimension)
-                consequent_vector = generate_vector(consequent, dimension=vector_dimension)
+            if is_conditional_statement:
+                antecedent = acep_data.get("attributes", {}).get("antecedent", "")
+                consequent = acep_data.get("attributes", {}).get("consequent", "")
+                json_certainty = acep_data.get("attributes", {}).get("certainty", certainty)
                 
-                # Bind the antecedent and consequent vectors to create rule vector
-                vector = bind_vectors(antecedent_vector, consequent_vector)
+                # Log the parsed components
+                logging.info(f"Using parsed components - ID: {identifier}, Antecedent: {antecedent}, Consequent: {consequent}, Ontology: {ontology_term}")
                 
-                # Create ACEP representation with rule components
+                if antecedent and consequent:
+                    # Generate component vectors
+                    antecedent_vector = generate_vector(antecedent, dimension=vector_dimension)
+                    consequent_vector = generate_vector(consequent, dimension=vector_dimension)
+                    
+                    # Bind the antecedent and consequent vectors to create rule vector
+                    vector = bind_vectors(antecedent_vector, consequent_vector)
+                    
+                    # Create ACEP representation with rule components
+                    acep_representation = {
+                        "type": acep_data.get("type", "acep_relation"),
+                        "identifier": identifier,
+                        "acep_text": acep_text,
+                        "original_text": text,
+                        "attributes": {
+                            "certainty": json_certainty,
+                            "entity_id": entity_id,
+                            "domain": domain,
+                            "antecedent": antecedent,
+                            "consequent": consequent,
+                            "conditional": True,
+                            "rule_text": text,
+                            "ontology_term": ontology_term
+                        },
+                        "component_vectors": {
+                            "antecedent": antecedent_vector,
+                            "consequent": consequent_vector
+                        },
+                        "vector": vector
+                    }
+                    logging.info(f"Created conditional representation with component vectors for {identifier}")
+                    return acep_representation
+            else:
+                # For facts, use the ontology term if available
+                if ontology_term:
+                    vector = generate_vector(ontology_term, dimension=vector_dimension)
+                    logging.info(f"Generated vector for ontology term: {ontology_term}")
+                else:
+                    # Extract keywords as fallback
+                    keywords = extract_keywords(text)
+                    if keywords:
+                        logging.info(f"Extracted keywords for {identifier}: {', '.join(keywords)}")
+                        # Generate a vector for each keyword and bundle them
+                        keyword_vectors = [generate_vector(kw, dimension=vector_dimension) for kw in keywords]
+                        vector = bundle_vectors(keyword_vectors)
+                    else:
+                        logging.warning(f"No ontology term or keywords found for {identifier}, using generic vector")
+                        vector = generate_vector(identifier, dimension=vector_dimension)
+                
+                # Create fact representation
                 acep_representation = {
-                    "type": acep_data.get("type", "acep_relation"),
+                    "type": acep_data.get("type", "acep_concept"),
                     "identifier": identifier,
                     "acep_text": acep_text,
                     "original_text": text,
                     "attributes": {
-                        "certainty": json_certainty,
+                        "certainty": acep_data.get("attributes", {}).get("certainty", certainty),
                         "entity_id": entity_id,
                         "domain": domain,
-                        "antecedent": antecedent,
-                        "consequent": consequent,
-                        "conditional": True,
-                        "rule_text": text
-                    },
-                    "component_vectors": {
-                        "antecedent": antecedent_vector,
-                        "consequent": consequent_vector
+                        "text": text,
+                        "fact_text": text,
+                        "ontology_term": ontology_term
                     },
                     "vector": vector
                 }
-                logging.info(f"Created conditional representation with component vectors for {identifier}")
+                logging.info(f"Created fact representation with ontology term for {identifier}")
                 return acep_representation
         
-        # If we don't have parsed JSON or it doesn't have the right structure,
-        # fall back to the original approach
+        # Fallback processing if JSON parsing failed
         if is_conditional_statement:
             # Extract antecedent and consequent
             try:
