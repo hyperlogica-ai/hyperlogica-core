@@ -1,6 +1,3 @@
-This should be named `hyperlogica_pipeline.py` to maintain the functional approach while integrating ontology support:
-
-```python
 """
 Hyperlogica Pipeline Module with Ontology Support
 

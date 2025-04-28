@@ -30,6 +30,7 @@ if parent_dir not in sys.path:
 from hyperlogica import process_input_file
 from hyperlogica.ontology_mapper import create_ontology_mapper, map_text_to_ontology
 
+
 def run_stock_analysis_with_ontology(config_path: str, output_path: str = None, verbose: bool = False):
     """
     Run stock analysis with ontology-enhanced processing.
@@ -80,6 +81,7 @@ def run_stock_analysis_with_ontology(config_path: str, output_path: str = None, 
     
     return results
 
+
 def demonstrate_ontology_mapping(config_path: str):
     """
     Demonstrate how the ontology mapper works with example phrases.
@@ -128,6 +130,8 @@ def demonstrate_ontology_mapping(config_path: str):
     print("\nOntology Mapping Examples:")
     print("-" * 50)
     
+    finance_ontology = domain_config.get("finance_ontology", {})
+    
     for phrase in test_phrases:
         term, confidence = map_text_to_ontology(phrase, mapper)
         
@@ -135,10 +139,10 @@ def demonstrate_ontology_mapping(config_path: str):
             print(f"Phrase: \"{phrase}\"")
             print(f"Mapped to: {term} (confidence: {confidence:.2f})")
             
-            # Find category for this term
+            # Find category for this term - safely traverse the finance ontology structure
             category = None
-            for cat, terms in mapper["ontology"].items():
-                if term in terms:
+            for cat, terms in finance_ontology.items():
+                if isinstance(terms, dict) and term in terms:
                     category = cat
                     break
             
@@ -150,6 +154,7 @@ def demonstrate_ontology_mapping(config_path: str):
             print(f"Phrase: \"{phrase}\"")
             print("No mapping found")
             print()
+
 
 def main():
     """Main function."""

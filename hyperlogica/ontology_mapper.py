@@ -115,21 +115,13 @@ def map_text_to_ontology(text: str, mapper: Dict[str, Any]) -> Tuple[Optional[st
     best_match = None
     best_confidence = 0.0
     
+    # Browse through the ontology structure safely
     for category, term_dict in ontology.items():
-        # Make sure term_dict is iterable and contains key-value pairs
         if not isinstance(term_dict, dict):
-            logger.warning(f"Expected dictionary for category {category}, got {type(term_dict)}")
             continue
             
         for term, keywords in term_dict.items():
-            # Ensure term is hashable (string or other primitive type)
-            if not isinstance(term, (str, int, float, bool)):
-                logger.warning(f"Skipping non-hashable term type: {type(term)}")
-                continue
-                
-            # Ensure keywords is a list
             if not isinstance(keywords, list):
-                logger.warning(f"Expected list of keywords for term {term}, got {type(keywords)}")
                 continue
                 
             # Check how many keywords match in the text
@@ -139,7 +131,7 @@ def map_text_to_ontology(text: str, mapper: Dict[str, Any]) -> Tuple[Optional[st
                     matches += 1
             
             # Calculate confidence based on match ratio
-            if keywords and matches > 0:
+            if len(keywords) > 0 and matches > 0:
                 confidence = matches / len(keywords)
                 if confidence > best_confidence:
                     best_confidence = confidence
