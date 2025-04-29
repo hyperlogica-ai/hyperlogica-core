@@ -1,162 +1,237 @@
-# Hyperlogica Architecture
+# Hyperlogica Architecture: ACEP-Based Vector Reasoning
 
 ## Overview
 
-Hyperlogica is a vector-based reasoning system that implements the AI Conceptual Exchange Protocol (ACEP) using hyperdimensional computing principles. It is designed to provide efficient AI-to-AI communication with greater precision and computational efficiency than natural language.
+Hyperlogica is a vector-based reasoning system that implements the AI Conceptual Exchange Protocol (ACEP) using hyperdimensional computing principles. The system processes structured ACEP representations directly, generating vector embeddings for reasoning, and produces human-readable explanations of the reasoning process.
 
-The system is built around the concept of high-dimensional vector representations (typically 10,000+ dimensions) that can encode semantic relationships with explicit certainty values, allowing for more precise reasoning and knowledge representation.
+This document outlines the architecture of the Hyperlogica system with a focus on ACEP-based inputs and vector reasoning.
 
 ## Core Components
 
-### 1. Hyperdimensional Vector Engine (HVE)
+### 1. Input Processing
 
-The foundation of Hyperlogica is the Hyperdimensional Vector Engine, which manages high-dimensional vector operations:
+The system accepts ACEP-formatted data directly as input, with structured representation of:
 
-- **Vector Generation**: Creates high-dimensional vectors for concepts from text or other inputs
-- **Vector Operations**: Implements fundamental operations such as binding, bundling, and permutation
-- **Similarity Search**: Provides efficient mechanisms for finding related concepts
+- **Rules**: Conditional relations with explicit condition and implication components
+- **Facts**: Factual assertions with structured content and attributes
+- **Entities**: Groups of related facts with metadata
 
-### 2. Concept Vector Store (CVS)
+Input data is parsed from JSON configuration files, which include processing parameters, persistence options, and output schema specifications.
 
-The Concept Vector Store maintains the persistent storage of vectors representing concepts and their relationships:
+### 2. Vector Generation
 
-- **Storage Management**: Efficient storage and retrieval of high-dimensional vectors
-- **Versioning**: Tracks changes to concepts over time
-- **Indexing**: Optimized indexing for fast retrieval and similarity search
+Vectors are automatically generated from ACEP representations through a deterministic process:
 
-### 3. Syllogistic Reasoning System (SRS)
+- **Concept Vectors**: Generated from structured concept representations
+- **Role Binding**: Concepts are bound with role vectors (condition, implication)
+- **Rule Vectors**: Created by binding and bundling condition and implication components
+- **Fact Vectors**: Generated from structured fact content
 
-The Syllogistic Reasoning System implements bounded reasoning structures with controlled uncertainty propagation:
+The vector generation preserves semantic relationships, enabling meaningful similarity measurements during reasoning.
 
-- **Bounded Syllogisms**: Limits reasoning steps to manageable units to prevent error accumulation
-- **Certainty Propagation**: Mathematical propagation of certainty values through reasoning chains
-- **Validation**: Logical consistency checking and verification of reasoning steps
+### 3. Vector Operations
 
-### 4. LLM Integration Layer (LIL)
+The system implements core hyperdimensional computing operations:
 
-The LLM Integration Layer connects Hyperlogica with existing Large Language Models:
+- **Binding (⊕)**: Combines vectors to create associations (typically using XOR for binary vectors)
+- **Unbinding**: Extracts components from bound vectors
+- **Bundling (+)**: Creates superpositions of multiple vectors
+- **Normalization**: Ensures vectors maintain consistent properties
 
-- **Translation**: Converts between natural language and vector-based ACEP representations
-- **Explanation Generation**: Creates human-readable explanations of reasoning processes
-- **Knowledge Extraction**: Extracts structured knowledge from LLM outputs
+These operations enable complex reasoning with explicit certainty propagation.
 
-### 5. State Management System (SMS)
+### 4. Reasoning Engine
 
-The State Management System maintains the contextual state during AI-to-AI communication:
+The reasoning engine applies vector-based inference to derive conclusions:
 
-- **Context Tracking**: Maintains the shared context between systems
-- **Reference Resolution**: Efficiently resolves references to previously established concepts
-- **Session Management**: Handles persistent sessions and state transitions
+- **Pattern Matching**: Matches facts to rule conditions using vector similarity
+- **Inference Rules**: Applies modus ponens, conjunction introduction, and other logical patterns
+- **Certainty Propagation**: Propagates certainty values through reasoning chains
+- **Multi-Step Reasoning**: Builds reasoning chains up to configurable depth
+
+Multiple reasoning approaches are supported (weighted, Bayesian, majority).
+
+### 5. Natural Language Generation
+
+While accepting ACEP input directly, the system converts reasoning results to natural language:
+
+- **ACEP-to-English Conversion**: Converts ACEP conclusions to human-readable text
+- **Explanation Generation**: Creates natural language explanations of reasoning chains
+- **Customizable Output**: Formats output according to domain-specific schema
+
+This component leverages LLMs to generate high-quality explanations.
+
+### 6. Persistence Layer
+
+The system supports state persistence across sessions:
+
+- **Vector Store**: Efficient storage and retrieval of high-dimensional vectors
+- **State Management**: Preserves context and reasoning chains
+- **Result Serialization**: Exports results in configurable formats
 
 ## Data Flow
 
-The typical data flow through the Hyperlogica system is:
-
 1. **Input Processing**:
-   - Parse configuration and input data
-   - Set up processing pipeline based on configuration
+   - Parse ACEP input configuration
+   - Extract processing parameters
+   - Initialize vector store and state
 
-2. **Concept Vectorization**:
-   - Convert rules and facts to ACEP representations using LLM
-   - Generate vector representations
-   - Store in Concept Vector Store
+2. **Vector Generation**:
+   - Generate vectors for all ACEP rules
+   - Generate vectors for all ACEP facts
+   - Store vectors in the vector store
 
 3. **Reasoning**:
-   - Apply specified reasoning approach to rules and facts
-   - Build syllogistic reasoning chains
-   - Calculate certainty values for conclusions
+   - For each entity:
+     - Match facts against rule conditions using vector similarity
+     - Apply inference rules to derive conclusions
+     - Build reasoning chains and track certainty
+     - Determine final outcomes
 
 4. **Output Generation**:
-   - Convert conclusions to natural language using LLM
+   - Convert ACEP conclusions to natural language
+   - Generate explanations of reasoning processes
    - Format according to output schema
-   - Generate explanations of reasoning process
+   - Save results to specified location
 
-5. **Persistence**:
-   - Save state for future sessions
-   - Store reasoning traces for auditing
+## ACEP Representation
 
-## Vector Operations
+### Rule Format
 
-Hyperlogica implements core vector operations from Hyperdimensional Computing:
+```json
+{
+  "identifier": "rule_example",
+  "type": "conditional_relation",
+  "content": {
+    "condition": {
+      "concept": "example_concept",
+      "relation": "example_relation",
+      "reference": "example_reference"
+    },
+    "implication": {
+      "concept": "result_concept",
+      "state": "result_state"
+    }
+  },
+  "attributes": {
+    "certainty": 0.8,
+    "domain": "example_domain",
+    "source": "example_source"
+  },
+  "binding": {
+    "operation": "conditional_binding",
+    "parameters": {
+      "binding_strength": 0.9
+    }
+  }
+}
+```
 
-### Binding (⊕)
+### Fact Format
 
-Binding combines two vectors to create a new vector that represents their association:
+```json
+{
+  "identifier": "fact_example",
+  "type": "factual_assertion",
+  "content": {
+    "concept": "example_concept",
+    "relation": "example_relation",
+    "reference": "example_reference",
+    "actual_value": 123.4,
+    "reference_value": 100.0
+  },
+  "attributes": {
+    "certainty": 0.95,
+    "source": "example_source",
+    "timestamp": "yyyy-mm-dd"
+  }
+}
+```
 
-- For binary vectors: Element-wise XOR
-- For continuous vectors: Circular convolution
+## Vector Generation Process
 
-The bound vector is approximately orthogonal to both input vectors.
+1. **Concept Vector Generation**:
+   - Convert structured concept representation to a deterministic string
+   - Use hash of string to seed random generator
+   - Generate vector of specified dimension and type
 
-### Bundling (+)
+2. **Role Vector Generation**:
+   - Generate unique vectors for roles (condition, implication)
+   - Ensure approximate orthogonality between role vectors
 
-Bundling combines multiple vectors into a superposition:
+3. **Rule Vector Generation**:
+   - Generate vectors for condition and implication components
+   - Bind components with their respective roles
+   - Bundle role-bound vectors to create the rule vector
 
-- Weighted vector addition followed by normalization
-- The result is similar to all components, with similarity proportional to weights
-
-### Permutation (ρ)
-
-Permutation reorders vector elements to encode sequence information:
-
-- Typically implemented as cyclic shift
-- Creates a vector that is dissimilar from the original but preserves information
+4. **Fact Vector Generation**:
+   - Generate vector from structured fact content
+   - Ensure semantic alignment with rule conditions
 
 ## Reasoning Approaches
 
-Hyperlogica supports multiple reasoning approaches:
+### 1. Vector-Weighted Approach
 
-### Majority Approach
-
-- Counts positive and negative signals
-- Makes decisions based on which has more supporting evidence
-- Simple but effective for many scenarios
-
-### Weighted Approach
-
-- Assigns weights to evidence based on certainty and importance
+- Weights evidence based on vector similarity and certainty
 - Calculates weighted sum for decision making
-- More nuanced than the majority approach
+- Provides nuanced reasoning with certainty qualification
 
-### Bayesian Approach
+### 2. Bayesian Approach
 
 - Updates probabilistic beliefs based on new evidence
 - Uses Bayes' rule for mathematical rigor
 - Handles complex interdependencies between evidence
 
-## Extensibility
+### 3. Vector-Chain Approach
 
-Hyperlogica is designed to be extensible in several key areas:
+- Constructs explicit reasoning chains
+- Preserves intermediate conclusions
+- Enables explanation of multi-step reasoning
 
-1. **Reasoning Approaches**: New approaches can be registered using the extension system
-2. **Vector Operations**: Custom binding, bundling, and similarity methods can be added
-3. **Certainty Calculators**: Different methods for propagating certainty can be implemented
-4. **Hooks**: Pre/post processing hooks allow for customization of the pipeline
+## Benefits
 
-## Performance Considerations
+1. **Precision**: ACEP representation provides precise concept encoding
+2. **Efficiency**: Direct ACEP processing eliminates translation overhead
+3. **Transparency**: Explicit reasoning chains with certainty values
+4. **Flexibility**: Multiple reasoning approaches for different domains
+5. **Explainability**: Natural language explanations of reasoning processes
 
-Hyperlogica optimizes performance in several ways:
+## Integration Points
 
-1. **Efficient Vector Operations**: Vectorized implementations using NumPy
-2. **FAISS Integration**: Fast similarity search for high-dimensional vectors
-3. **Caching**: LLM API calls are cached to avoid redundant processing
-4. **Parallel Processing**: Independent operations can be parallelized
-5. **State Reference System**: Minimizes redundant information transfer
+1. **Input Integration**: Submit ACEP-formatted JSON configuration
+2. **Vector Generation**: Optional external vector generation utility
+3. **Result Consumption**: Access structured results or natural language explanations
+4. **State Persistence**: Save and load reasoning state across sessions
 
-## Security and Privacy
+## Example Usage
 
-The system incorporates several security and privacy measures:
+```python
+from hyperlogica import process_input_file
 
-1. **Data Protection**: Encryption of vector stores
-2. **Access Control**: Role-based access to knowledge bases
-3. **Audit Trails**: Comprehensive logging of reasoning processes
-4. **Provenance Tracking**: Source information for all knowledge
+# Process ACEP input configuration
+results = process_input_file(
+    input_path="acep_input_example.json",
+    options={"verbose": True}
+)
 
-## Limitations
+# Access results
+for result in results["results"]:
+    print(f"{result['entity_id']}: {result['outcome']} ({result['certainty']:.2f} confidence)")
+    
+    # Access explanation
+    explanation = result["reasoning"]["explanation"]
+    print(f"Explanation: {explanation}")
+```
 
-Current limitations of the system include:
+## Technical Requirements
 
-1. **Computational Requirements**: High dimensionality requires significant memory and processing power
-2. **Translation Fidelity**: Some nuance may be lost in LLM translation
-3. **Domain Expertise**: Performance depends on quality of domain-specific rules and configurations
-4. **Certainty Calibration**: Proper calibration of certainty values requires domain expertise
+- Python 3.8+
+- NumPy for vector operations
+- FAISS (optional) for efficient vector storage and retrieval
+- OpenAI API key for natural language explanation generation
+
+## Conclusion
+
+Hyperlogica provides a powerful framework for vector-based reasoning using ACEP representations. By accepting structured ACEP data directly and generating vector representations automatically, the system eliminates the need for language translation while maintaining the ability to produce human-readable explanations of the reasoning process.
+
+This architecture enables efficient AI-to-AI communication with the precision of vector reasoning and the interpretability of natural language explanations.
