@@ -264,7 +264,7 @@ def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str
     else:
         raise ValueError(f"Unsupported similarity method: {method}")
 
-def create_role_vectors(dimension: int, num_roles: int = 8) -> Dict[str, np.ndarray]:
+def create_role_vectors(dimension: int, num_roles: int = 4) -> Dict[str, np.ndarray]:
     """
     Create a set of approximately orthogonal role vectors for ACEP representation.
     
@@ -314,27 +314,16 @@ def create_conditional_representation(condition: Dict[str, Any], implication: Di
     condition_relation_vector = generate_vector(condition_relation_text, dimension)
     condition_reference_vector = generate_vector(condition_reference_text, dimension)
     
-    # Ensure all necessary roles exist, creating them if needed
-    required_roles = ["concept", "relation", "reference", "state", "condition", "implication"]
-    for role_name in required_roles:
-        if role_name not in roles:
-            logger.warning(f"Role '{role_name}' not found, generating it dynamically")
-            seed = int(hashlib.md5(role_name.encode()).hexdigest(), 16) % (2**32)
-            roles[role_name] = generate_vector(role_name, dimension, "continuous", seed)
+    # CRITICAL IMPROVEMENT: Bind concept and relation directly
+    # This preserves orthogonality between opposing relations
+    concept_relation_vector = bind_vectors(condition_concept_vector, condition_relation_vector)
     
-    # Get roles with guaranteed existence
-    concept_role = roles["concept"]
-    relation_role = roles["relation"]
-    reference_role = roles["reference"]
+    # Then bind with reference
+    condition_compound_vector = bind_vectors(concept_relation_vector, condition_reference_vector)
     
-    # Bind condition components with their roles
-    bound_concept = bind_vectors(condition_concept_vector, concept_role)
-    bound_relation = bind_vectors(condition_relation_vector, relation_role)
-    bound_reference = bind_vectors(condition_reference_vector, reference_role)
-    
-    # Bundle the components to form the condition vector
-    condition_components = [bound_concept, bound_relation, bound_reference]
-    condition_vector = bundle_vectors(condition_components)
+    # Apply role binding for structural marking
+    condition_role = roles.get("condition")
+    tagged_condition_vector = bind_vectors(condition_compound_vector, condition_role)
     
     # Generate vectors for implication components
     implication_concept_text = implication.get("concept", "")
@@ -343,36 +332,26 @@ def create_conditional_representation(condition: Dict[str, Any], implication: Di
     implication_concept_vector = generate_vector(implication_concept_text, dimension)
     implication_state_vector = generate_vector(implication_state_text, dimension)
     
-    # Get state role with guaranteed existence
-    state_role = roles["state"]
+    # CRITICAL IMPROVEMENT: Bind concept and state directly
+    implication_compound_vector = bind_vectors(implication_concept_vector, implication_state_vector)
     
-    # Bind implication components with their roles
-    bound_impl_concept = bind_vectors(implication_concept_vector, concept_role)
-    bound_impl_state = bind_vectors(implication_state_vector, state_role)
-    
-    # Bundle the components to form the implication vector
-    implication_components = [bound_impl_concept, bound_impl_state]
-    implication_vector = bundle_vectors(implication_components)
-    
-    # Bind condition and implication with their roles
-    condition_role = roles["condition"]
-    implication_role = roles["implication"]
-    
-    bound_condition = bind_vectors(condition_vector, condition_role)
-    bound_implication = bind_vectors(implication_vector, implication_role)
+    # Apply role binding for structural marking
+    implication_role = roles.get("implication")
+    tagged_implication_vector = bind_vectors(implication_compound_vector, implication_role)
     
     # Bundle to create the final rule vector
-    rule_components = [bound_condition, bound_implication]
-    rule_vector = bundle_vectors(rule_components)
+    rule_vector = bundle_vectors([tagged_condition_vector, tagged_implication_vector])
     
     return {
-        "condition_vector": condition_vector,
-        "implication_vector": implication_vector,
+        "condition_vector": tagged_condition_vector,
+        "raw_condition_vector": condition_compound_vector,
+        "implication_vector": tagged_implication_vector,
         "rule_vector": rule_vector,
         "component_vectors": {
             "condition_concept": condition_concept_vector,
             "condition_relation": condition_relation_vector,
             "condition_reference": condition_reference_vector,
+            "concept_relation": concept_relation_vector,
             "implication_concept": implication_concept_vector,
             "implication_state": implication_state_vector
         }
@@ -391,27 +370,114 @@ def create_fact_representation(fact: Dict[str, Any], roles: Dict[str, np.ndarray
     Returns:
         Dict[str, np.ndarray]: Dictionary with fact vector and component vectors
     """
-    # Generate vectors for components
-    concept_vector = generate_vector(fact.get("concept", ""), dimension)
-    relation_vector = generate_vector(fact.get("relation", ""), dimension)
-    reference_vector = generate_vector(fact.get("reference", ""), dimension)
+    # Generate vectors for fact components
+    concept_text = fact.get("concept", "")
+    relation_text = fact.get("relation", "")
+    reference_text = fact.get("reference", "")
     
-    # Bind all components directly
-    fact_vector = concept_vector
-    fact_vector = bind_vectors(fact_vector, relation_vector)
-    fact_vector = bind_vectors(fact_vector, reference_vector)
+    concept_vector = generate_vector(concept_text, dimension)
+    relation_vector = generate_vector(relation_text, dimension)
+    reference_vector = generate_vector(reference_text, dimension)
     
-    # Optionally bind with a fact marker
-    fact_vector = bind_vectors(fact_vector, roles.get("fact"))
+    # CRITICAL IMPROVEMENT: Bind concept and relation directly
+    concept_relation_vector = bind_vectors(concept_vector, relation_vector)
+    
+    # Then bind with reference
+    fact_compound_vector = bind_vectors(concept_relation_vector, reference_vector)
+    
+    # Apply role binding for structural marking
+    condition_role = roles.get("condition")
+    tagged_fact_vector = bind_vectors(fact_compound_vector, condition_role)
+    
+    # Get actual and reference values if they exist
+    actual_value = fact.get("actual_value")
+    reference_value = fact.get("reference_value")
+    
+    if actual_value is not None:
+        actual_text = f"{concept_text}_{actual_value}"
+        actual_vector = generate_vector(actual_text, dimension)
+    else:
+        actual_vector = None
+    
+    if reference_value is not None:
+        reference_value_text = f"{reference_text}_{reference_value}"
+        reference_value_vector = generate_vector(reference_value_text, dimension)
+    else:
+        reference_value_vector = None
     
     return {
-        "fact_vector": fact_vector,
+        "fact_vector": tagged_fact_vector,  # FIXED: Use "fact_vector" for API compatibility
+        "raw_fact_vector": fact_compound_vector,
         "component_vectors": {
             "concept": concept_vector,
             "relation": relation_vector,
-            "reference": reference_vector
+            "reference": reference_vector,
+            "concept_relation": concept_relation_vector,
+            "actual_value": actual_vector,
+            "reference_value": reference_value_vector
         }
     }
+
+def match_condition_to_fact(rule: Dict[str, Any], fact: Dict[str, Any], 
+                          roles: Dict[str, np.ndarray],
+                          similarity_threshold: float = 0.7) -> Tuple[bool, float]:
+    """
+    Check if a fact matches a rule's condition using vector similarity.
+    
+    Args:
+        rule (Dict[str, Any]): Rule representation with condition vector
+        fact (Dict[str, Any]): Fact representation with vector
+        roles (Dict[str, np.ndarray]): Role vectors for structure
+        similarity_threshold (float): Threshold for considering a match
+        
+    Returns:
+        Tuple[bool, float]: (match_result, similarity_score)
+    """
+    # Get vectors
+    if "condition_vector" not in rule:
+        return False, 0.0
+    
+    # FIXED: Check for "fact_vector" instead of "vector"
+    if "fact_vector" not in fact and "vector" not in fact:
+        return False, 0.0
+    
+    condition_vector = rule["condition_vector"]
+    # FIXED: Use "fact_vector" if available, fall back to "vector" for compatibility
+    fact_vector = fact.get("fact_vector", fact.get("vector"))
+    
+    # Check for NaN or infinite values
+    if np.isnan(condition_vector).any() or np.isinf(condition_vector).any():
+        logger.warning("Condition vector contains NaN or Inf values")
+        condition_vector = np.nan_to_num(condition_vector)
+    
+    if np.isnan(fact_vector).any() or np.isinf(fact_vector).any():
+        logger.warning("Fact vector contains NaN or Inf values")
+        fact_vector = np.nan_to_num(fact_vector)
+    
+    # Calculate similarity
+    similarity = calculate_similarity(condition_vector, fact_vector)
+    
+    # Get ACEP content for logging
+    rule_condition = rule.get("acep", {}).get("content", {}).get("condition", {})
+    fact_content = fact.get("acep", {}).get("content", {})
+    
+    rule_concept = rule_condition.get("concept", "")
+    fact_concept = fact_content.get("concept", "")
+    
+    rule_relation = rule_condition.get("relation", "")
+    fact_relation = fact_content.get("relation", "")
+    
+    rule_reference = rule_condition.get("reference", "")
+    fact_reference = fact_content.get("reference", "")
+    
+    # Check if similarity exceeds threshold
+    if similarity >= similarity_threshold:
+        logger.info(f"Match found! Similarity: {similarity:.4f}")
+        logger.info(f"Rule condition: {rule_concept}-{rule_relation}-{rule_reference}")
+        logger.info(f"Fact content: {fact_concept}-{fact_relation}-{fact_reference}")
+        return True, similarity
+    
+    return False, similarity
 
 def cleanse_vector(vector: np.ndarray) -> np.ndarray:
     """
@@ -428,3 +494,46 @@ def cleanse_vector(vector: np.ndarray) -> np.ndarray:
     
     # Normalize the vector
     return normalize_vector(vector)
+
+def are_opposite_relations(relation1: str, relation2: str) -> bool:
+    """
+    Check if two relations are conceptual opposites.
+    
+    Args:
+        relation1 (str): First relation
+        relation2 (str): Second relation
+        
+    Returns:
+        bool: True if relations are opposites
+    """
+    # Define pairs of opposite relations
+    opposites = {
+        "increasing": ["decreasing", "contracting", "declining", "reducing", "falling"],
+        "decreasing": ["increasing", "expanding", "growing", "rising", "accelerating"],
+        "expanding": ["contracting", "declining", "decreasing", "reducing"],
+        "contracting": ["expanding", "growing", "increasing"],
+        "above": ["below", "under", "beneath"],
+        "below": ["above", "over", "exceeding"],
+        "positive": ["negative", "unfavorable"],
+        "negative": ["positive", "favorable"],
+        "accelerating": ["slowing", "decelerating"],
+        "slowing": ["accelerating", "speeding"],
+        "outperforming": ["underperforming"],
+        "underperforming": ["outperforming"],
+        "buy": ["sell"],
+        "sell": ["buy"]
+    }
+    
+    # Normalize to lowercase
+    rel1 = relation1.lower()
+    rel2 = relation2.lower()
+    
+    # Check if they're in the opposites dictionary
+    if rel1 in opposites and rel2 in opposites.get(rel1, []):
+        return True
+    
+    if rel2 in opposites and rel1 in opposites.get(rel2, []):
+        return True
+    
+    return False
+

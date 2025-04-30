@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def match_condition_to_fact(rule: Dict[str, Any], fact: Dict[str, Any], 
                           roles: Dict[str, np.ndarray],
-                          similarity_threshold: float = 0.55) -> Tuple[bool, float]:
+                          similarity_threshold: float = 0.7) -> Tuple[bool, float]:
     """
     Check if a fact matches a rule's condition using vector similarity.
     
@@ -35,25 +35,65 @@ def match_condition_to_fact(rule: Dict[str, Any], fact: Dict[str, Any],
     Returns:
         Tuple[bool, float]: (match_result, similarity_score)
     """
-    # Get vectors
+    # Get vectors - both should be tagged with condition_role for structural compatibility
+    if "condition_vector" not in rule:
+        logger.warning(f"Rule {rule.get('identifier', 'unknown')} has no condition_vector")
+        return False, 0.0
+        
+    if "vector" not in fact:
+        logger.warning(f"Fact {fact.get('identifier', 'unknown')} has no vector")
+        return False, 0.0
+    
     condition_vector = rule["condition_vector"]
+    fact_vector = fact["vector"]
     
-    # Get the fact vector BEFORE binding with fact_role
-    # Either store this in the fact object or unbind it here
-    if "original_vector" in fact:
-        fact_vector = fact["original_vector"]  # Before fact_role binding
-    else:
-        # Try to unbind the fact_role
-        fact_role = roles.get("fact")
-        if fact_role is not None and "vector" in fact:
-            fact_vector = unbind_vectors(fact["vector"], fact_role)
-        else:
-            fact_vector = fact["vector"]
+    # Log vectors for debugging (sample values)
+    if logger.isEnabledFor(logging.DEBUG):
+        # Log just a small sample of the vectors to avoid excessive output
+        sample_size = min(5, len(condition_vector))
+        logger.debug(f"Condition vector sample: {condition_vector[:sample_size]}")
+        logger.debug(f"Fact vector sample: {fact_vector[:sample_size]}")
     
-    # Now compare vectors in the same space
+    # Check for NaN or infinite values
+    if np.isnan(condition_vector).any() or np.isinf(condition_vector).any():
+        logger.warning("Condition vector contains NaN or Inf values")
+        condition_vector = np.nan_to_num(condition_vector)
+    
+    if np.isnan(fact_vector).any() or np.isinf(fact_vector).any():
+        logger.warning("Fact vector contains NaN or Inf values")
+        fact_vector = np.nan_to_num(fact_vector)
+    
+    # Calculate similarity - these should now be structurally comparable
     similarity = calculate_similarity(condition_vector, fact_vector)
     
+    # Log ACEP content for high-similarity matches
+    if similarity > 0.5:
+        rule_condition = rule.get("acep", {}).get("content", {}).get("condition", {})
+        fact_content = fact.get("acep", {}).get("content", {})
+        
+        rule_concept = rule_condition.get("concept", "")
+        fact_concept = fact_content.get("concept", "")
+        
+        rule_relation = rule_condition.get("relation", "")
+        fact_relation = fact_content.get("relation", "")
+        
+        # Log the concepts and relations being compared
+        logger.debug(f"High similarity ({similarity:.4f}): {rule_concept}_{rule_relation} vs {fact_concept}_{fact_relation}")
+    
+    # Check if similarity exceeds threshold
     if similarity >= similarity_threshold:
+        logger.info(f"Match found! Similarity: {similarity:.4f}")
+        
+        # Log details of the match
+        rule_id = rule.get("identifier", "unknown")
+        fact_id = fact.get("identifier", "unknown")
+        logger.info(f"Rule {rule_id} matched fact {fact_id} with similarity {similarity:.4f}")
+        
+        rule_condition = rule.get("acep", {}).get("content", {}).get("condition", {})
+        fact_content = fact.get("acep", {}).get("content", {})
+        logger.info(f"Rule condition: {rule_condition.get('concept', '')}-{rule_condition.get('relation', '')}-{rule_condition.get('reference', '')}")
+        logger.info(f"Fact content: {fact_content.get('concept', '')}-{fact_content.get('relation', '')}-{fact_content.get('reference', '')}")
+        
         return True, similarity
     
     return False, similarity
@@ -177,17 +217,39 @@ def apply_vector_chain_reasoning(rules: List[Dict[str, Any]], facts: List[Dict[s
     logger.info(f"Starting vector chain reasoning for entity {entity_id}")
     logger.info(f"Initial facts: {len(facts)}, Rules: {len(rules)}")
     
+    # Enhanced debugging - log the first fact and rule concepts for inspection
+    if facts and rules:
+        first_fact = facts[0]
+        first_rule = rules[0]
+        fact_acep = first_fact.get("acep", {})
+        rule_acep = first_rule.get("acep", {})
+        
+        logger.info(f"Sample fact concept: {fact_acep.get('content', {}).get('concept', 'N/A')}")
+        logger.info(f"Sample rule condition concept: {rule_acep.get('content', {}).get('condition', {}).get('concept', 'N/A')}")
+        
+        # Log vector shapes and types
+        if "vector" in first_fact and "condition_vector" in first_rule:
+            logger.info(f"Fact vector shape: {first_fact['vector'].shape}, type: {first_fact['vector'].dtype}")
+            logger.info(f"Rule condition vector shape: {first_rule['condition_vector'].shape}, type: {first_rule['condition_vector'].dtype}")
+    
+    # Pre-match similarity check for first rule-fact pair (diagnostic)
+    if facts and rules:
+        test_match, test_similarity = match_condition_to_fact(rules[0], facts[0], roles, 0.0)  # Use 0.0 threshold for testing
+        logger.info(f"Test match similarity: {test_similarity:.4f} (threshold is {similarity_threshold:.4f})")
+    
     # Reasoning iterations
     while depth < max_depth:
         logger.info(f"Reasoning depth: {depth+1}/{max_depth}")
         new_conclusions = []
         
         # Try to match each rule with each fact
+        match_attempts = 0
         for rule in rules:
             rule_id = rule.get("identifier", f"rule_{uuid.uuid4()}")
             
             for fact in current_facts:
                 fact_id = fact.get("identifier", f"fact_{uuid.uuid4()}")
+                match_attempts += 1
                 
                 # Skip already derived concepts for this rule to avoid cycles
                 derivation_key = f"{rule_id}_{fact_id}"
@@ -258,6 +320,9 @@ def apply_vector_chain_reasoning(rules: List[Dict[str, Any]], facts: List[Dict[s
                         negative_conclusions.append(conclusion)
                     else:
                         neutral_conclusions.append(conclusion)
+        
+        # Log match statistics
+        logger.info(f"Attempted {match_attempts} rule-fact matches at depth {depth+1}")
         
         # If no new conclusions were generated, we've reached a fixed point
         if not new_conclusions:
