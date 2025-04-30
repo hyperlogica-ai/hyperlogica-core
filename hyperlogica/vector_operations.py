@@ -264,7 +264,7 @@ def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str
     else:
         raise ValueError(f"Unsupported similarity method: {method}")
 
-def create_role_vectors(dimension: int, num_roles: int = 4) -> Dict[str, np.ndarray]:
+def create_role_vectors(dimension: int, num_roles: int = 8) -> Dict[str, np.ndarray]:
     """
     Create a set of approximately orthogonal role vectors for ACEP representation.
     
@@ -314,11 +314,20 @@ def create_conditional_representation(condition: Dict[str, Any], implication: Di
     condition_relation_vector = generate_vector(condition_relation_text, dimension)
     condition_reference_vector = generate_vector(condition_reference_text, dimension)
     
-    # Bind condition components with their roles
-    concept_role = roles.get("concept")
-    relation_role = roles.get("relation")
-    reference_role = roles.get("reference")
+    # Ensure all necessary roles exist, creating them if needed
+    required_roles = ["concept", "relation", "reference", "state", "condition", "implication"]
+    for role_name in required_roles:
+        if role_name not in roles:
+            logger.warning(f"Role '{role_name}' not found, generating it dynamically")
+            seed = int(hashlib.md5(role_name.encode()).hexdigest(), 16) % (2**32)
+            roles[role_name] = generate_vector(role_name, dimension, "continuous", seed)
     
+    # Get roles with guaranteed existence
+    concept_role = roles["concept"]
+    relation_role = roles["relation"]
+    reference_role = roles["reference"]
+    
+    # Bind condition components with their roles
     bound_concept = bind_vectors(condition_concept_vector, concept_role)
     bound_relation = bind_vectors(condition_relation_vector, relation_role)
     bound_reference = bind_vectors(condition_reference_vector, reference_role)
@@ -334,9 +343,10 @@ def create_conditional_representation(condition: Dict[str, Any], implication: Di
     implication_concept_vector = generate_vector(implication_concept_text, dimension)
     implication_state_vector = generate_vector(implication_state_text, dimension)
     
-    # Bind implication components with their roles
-    state_role = roles.get("state")
+    # Get state role with guaranteed existence
+    state_role = roles["state"]
     
+    # Bind implication components with their roles
     bound_impl_concept = bind_vectors(implication_concept_vector, concept_role)
     bound_impl_state = bind_vectors(implication_state_vector, state_role)
     
@@ -345,8 +355,8 @@ def create_conditional_representation(condition: Dict[str, Any], implication: Di
     implication_vector = bundle_vectors(implication_components)
     
     # Bind condition and implication with their roles
-    condition_role = roles.get("condition")
-    implication_role = roles.get("implication")
+    condition_role = roles["condition"]
+    implication_role = roles["implication"]
     
     bound_condition = bind_vectors(condition_vector, condition_role)
     bound_implication = bind_vectors(implication_vector, implication_role)
@@ -381,64 +391,25 @@ def create_fact_representation(fact: Dict[str, Any], roles: Dict[str, np.ndarray
     Returns:
         Dict[str, np.ndarray]: Dictionary with fact vector and component vectors
     """
-    # Generate vectors for fact components
-    concept_text = fact.get("concept", "")
-    relation_text = fact.get("relation", "")
-    reference_text = fact.get("reference", "")
+    # Generate vectors for components
+    concept_vector = generate_vector(fact.get("concept", ""), dimension)
+    relation_vector = generate_vector(fact.get("relation", ""), dimension)
+    reference_vector = generate_vector(fact.get("reference", ""), dimension)
     
-    concept_vector = generate_vector(concept_text, dimension)
-    relation_vector = generate_vector(relation_text, dimension)
-    reference_vector = generate_vector(reference_text, dimension)
+    # Bind all components directly
+    fact_vector = concept_vector
+    fact_vector = bind_vectors(fact_vector, relation_vector)
+    fact_vector = bind_vectors(fact_vector, reference_vector)
     
-    # Get actual and reference values if they exist
-    actual_value = fact.get("actual_value")
-    reference_value = fact.get("reference_value")
-    
-    if actual_value is not None:
-        actual_text = f"{concept_text}_{actual_value}"
-        actual_vector = generate_vector(actual_text, dimension)
-    else:
-        actual_vector = None
-    
-    if reference_value is not None:
-        reference_value_text = f"{reference_text}_{reference_value}"
-        reference_value_vector = generate_vector(reference_value_text, dimension)
-    else:
-        reference_value_vector = None
-    
-    # Bind components with their roles
-    concept_role = roles.get("concept")
-    relation_role = roles.get("relation")
-    reference_role = roles.get("reference")
-    
-    bound_concept = bind_vectors(concept_vector, concept_role)
-    bound_relation = bind_vectors(relation_vector, relation_role)
-    bound_reference = bind_vectors(reference_vector, reference_role)
-    
-    # Create component vectors list
-    components = [bound_concept, bound_relation, bound_reference]
-    
-    # Add value vectors if they exist
-    if actual_vector is not None and "value" in roles:
-        value_role = roles.get("value")
-        bound_value = bind_vectors(actual_vector, value_role)
-        components.append(bound_value)
-    
-    # Bundle to create the fact vector
-    fact_vector = bundle_vectors(components)
-    
-    # Bind with fact role to indicate this is a fact
-    fact_role = roles.get("fact", generate_vector("fact", dimension))
-    final_fact_vector = bind_vectors(fact_vector, fact_role)
+    # Optionally bind with a fact marker
+    fact_vector = bind_vectors(fact_vector, roles.get("fact"))
     
     return {
-        "fact_vector": final_fact_vector,
+        "fact_vector": fact_vector,
         "component_vectors": {
             "concept": concept_vector,
             "relation": relation_vector,
-            "reference": reference_vector,
-            "actual_value": actual_vector,
-            "reference_value": reference_value_vector
+            "reference": reference_vector
         }
     }
 

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def match_condition_to_fact(rule: Dict[str, Any], fact: Dict[str, Any], 
                           roles: Dict[str, np.ndarray],
-                          similarity_threshold: float = 0.7) -> Tuple[bool, float]:
+                          similarity_threshold: float = 0.55) -> Tuple[bool, float]:
     """
     Check if a fact matches a rule's condition using vector similarity.
     
@@ -36,21 +36,28 @@ def match_condition_to_fact(rule: Dict[str, Any], fact: Dict[str, Any],
         Tuple[bool, float]: (match_result, similarity_score)
     """
     # Get vectors
-    if "condition_vector" not in rule or "vector" not in fact:
-        return False, 0.0
-    
     condition_vector = rule["condition_vector"]
-    fact_vector = fact["vector"]
     
-    # Calculate similarity
+    # Get the fact vector BEFORE binding with fact_role
+    # Either store this in the fact object or unbind it here
+    if "original_vector" in fact:
+        fact_vector = fact["original_vector"]  # Before fact_role binding
+    else:
+        # Try to unbind the fact_role
+        fact_role = roles.get("fact")
+        if fact_role is not None and "vector" in fact:
+            fact_vector = unbind_vectors(fact["vector"], fact_role)
+        else:
+            fact_vector = fact["vector"]
+    
+    # Now compare vectors in the same space
     similarity = calculate_similarity(condition_vector, fact_vector)
     
-    # Check if similarity exceeds threshold
     if similarity >= similarity_threshold:
-        logger.debug(f"Match found! Similarity: {similarity:.4f}")
         return True, similarity
     
     return False, similarity
+
 
 def create_conclusion(rule: Dict[str, Any], fact: Dict[str, Any], 
                     similarity: float, entity_id: str,
@@ -345,4 +352,93 @@ def classify_conclusion(conclusion: Dict[str, Any]) -> str:
     if state in positive_states:
         signal_type = "positive"
     elif state in negative_states:
-        signal_type = "
+        signal_type = "negative"
+    
+    return signal_type
+
+def generate_explanation(reasoning_result: Dict[str, Any]) -> str:
+    """
+    Generate a natural language explanation of the reasoning process.
+    
+    Args:
+        reasoning_result (Dict[str, Any]): Result of the reasoning process
+        
+    Returns:
+        str: Natural language explanation
+    """
+    # Extract key components from the reasoning result
+    outcome = reasoning_result.get("outcome", "NEUTRAL")
+    certainty = reasoning_result.get("certainty", 0.5)
+    entity_id = reasoning_result.get("entity_id", "")
+    
+    positive_evidence = reasoning_result.get("evidence_weights", {}).get("positive", 0)
+    negative_evidence = reasoning_result.get("evidence_weights", {}).get("negative", 0)
+    
+    positive_conclusions = reasoning_result.get("positive_conclusions", [])
+    negative_conclusions = reasoning_result.get("negative_conclusions", [])
+    
+    chains = reasoning_result.get("chains", [])
+    
+    # Start with the main recommendation
+    explanation_lines = []
+    
+    certainty_percent = int(certainty * 100)
+    if outcome == "POSITIVE":
+        explanation_lines.append(f"Based on the analysis, a BUY recommendation is provided for {entity_id} with {certainty_percent}% confidence.")
+    elif outcome == "NEGATIVE":
+        explanation_lines.append(f"Based on the analysis, a SELL recommendation is provided for {entity_id} with {certainty_percent}% confidence.")
+    else:
+        explanation_lines.append(f"Based on the analysis, a HOLD recommendation is provided for {entity_id} with {certainty_percent}% confidence.")
+    
+    # Add information about the evidence
+    explanation_lines.append("")
+    explanation_lines.append(f"This recommendation is based on {len(positive_conclusions)} positive and {len(negative_conclusions)} negative factors.")
+    
+    # Add the key positive factors
+    if positive_conclusions:
+        explanation_lines.append("\nKey positive factors:")
+        sorted_positive = sorted(positive_conclusions, key=lambda c: c.get("attributes", {}).get("certainty", 0), reverse=True)
+        for i, conclusion in enumerate(sorted_positive[:3]):  # Top 3 positive factors
+            cert = conclusion.get("attributes", {}).get("certainty", 0)
+            content = conclusion.get("acep", {}).get("content", {})
+            concept = content.get("concept", "")
+            state = content.get("state", "")
+            explanation_lines.append(f"  {i+1}. {concept} is {state} ({int(cert * 100)}% certainty)")
+    
+    # Add the key negative factors
+    if negative_conclusions:
+        explanation_lines.append("\nKey negative factors:")
+        sorted_negative = sorted(negative_conclusions, key=lambda c: c.get("attributes", {}).get("certainty", 0), reverse=True)
+        for i, conclusion in enumerate(sorted_negative[:3]):  # Top 3 negative factors
+            cert = conclusion.get("attributes", {}).get("certainty", 0)
+            content = conclusion.get("acep", {}).get("content", {})
+            concept = content.get("concept", "")
+            state = content.get("state", "")
+            explanation_lines.append(f"  {i+1}. {concept} is {state} ({int(cert * 100)}% certainty)")
+    
+    # Add information about reasoning chains if available
+    if chains:
+        explanation_lines.append("\nReasoning process:")
+        # Sort chains by certainty (highest first)
+        sorted_chains = sorted(chains, key=lambda c: c.get("final_certainty", 0), reverse=True)
+        
+        # Describe the strongest chain
+        strongest_chain = sorted_chains[0]
+        steps = strongest_chain.get("steps", [])
+        
+        explanation_lines.append(f"  The strongest reasoning chain had {len(steps)} steps:")
+        
+        for i, step in enumerate(steps):
+            acep = step.get("acep", {})
+            content = acep.get("content", {})
+            concept = content.get("concept", "")
+            state = content.get("state", "")
+            cert = step.get("certainty", 0)
+            
+            if i == len(steps) - 1:  # Final step
+                explanation_lines.append(f"  - Final conclusion: {concept} is {state} ({int(cert * 100)}% certainty)")
+            else:
+                explanation_lines.append(f"  - Step {i+1}: {concept} is {state} ({int(cert * 100)}% certainty)")
+    
+    # Combine all lines into a final explanation
+    return "\n".join(explanation_lines)
