@@ -1,7 +1,8 @@
 """
 Vector Operations Module
 
-Pure functional implementation of hyperdimensional vector operations for the Hyperlogica system.
+Pure functional implementation of hyperdimensional vector operations for the Hyperlogica system,
+with a focus on core ACEP operations: binding, unbinding, bundling, and normalization.
 """
 
 import numpy as np
@@ -11,7 +12,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def generate_vector(text: str, dimension: int = 10000, vector_type: str = "continuous", seed: Optional[int] = None) -> np.ndarray:
+def generate_vector(text: str, dimension: int = 10000, vector_type: str = "binary", seed: Optional[int] = None) -> np.ndarray:
     """
     Generate a deterministic vector representation from text.
     
@@ -210,23 +211,6 @@ def bundle_vectors(vectors: List[np.ndarray], weights: Optional[List[float]] = N
     
     return result
 
-def permute_vector(vector: np.ndarray, shift: int) -> np.ndarray:
-    """
-    Apply cyclic shift to vector for encoding order information.
-    
-    Args:
-        vector (np.ndarray): Vector to permute
-        shift (int): Number of positions to shift
-        
-    Returns:
-        np.ndarray: Permuted vector
-    """
-    # Ensure shift is within valid range
-    shift = shift % vector.shape[0]
-    
-    # Perform cyclic shift
-    return np.roll(vector, shift)
-
 def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str = "auto") -> float:
     """
     Calculate similarity between two vectors.
@@ -280,9 +264,9 @@ def calculate_similarity(vector_a: np.ndarray, vector_b: np.ndarray, method: str
     else:
         raise ValueError(f"Unsupported similarity method: {method}")
 
-def create_role_vectors(dimension: int, num_roles: int = 10) -> Dict[str, np.ndarray]:
+def create_role_vectors(dimension: int, num_roles: int = 4) -> Dict[str, np.ndarray]:
     """
-    Create a set of approximately orthogonal role vectors.
+    Create a set of approximately orthogonal role vectors for ACEP representation.
     
     Args:
         dimension (int): Dimensionality of the vectors
@@ -293,9 +277,8 @@ def create_role_vectors(dimension: int, num_roles: int = 10) -> Dict[str, np.nda
     """
     roles = {}
     role_names = [
-        "subject", "predicate", "object", 
-        "antecedent", "consequent", "condition",
-        "entity", "attribute", "value", "relation"
+        "condition", "implication", "concept", "relation", 
+        "reference", "state", "value", "fact"
     ]
     
     # Create orthogonal vectors for each role
@@ -307,88 +290,170 @@ def create_role_vectors(dimension: int, num_roles: int = 10) -> Dict[str, np.nda
     
     return roles
 
-def create_composite_vector(core_vector: np.ndarray, role_vector: np.ndarray) -> np.ndarray:
+def create_conditional_representation(condition: Dict[str, Any], implication: Dict[str, Any], 
+                                     roles: Dict[str, np.ndarray], 
+                                     dimension: int = 10000) -> Dict[str, np.ndarray]:
     """
-    Create a role-bound vector by binding a core vector with a role vector.
+    Create ACEP representation for a conditional rule using vector operations.
     
     Args:
-        core_vector (np.ndarray): The vector representing a concept
-        role_vector (np.ndarray): The vector representing a role
+        condition (Dict[str, Any]): Condition part of the rule
+        implication (Dict[str, Any]): Implication part of the rule
+        roles (Dict[str, np.ndarray]): Role vectors
+        dimension (int): Vector dimension
         
     Returns:
-        np.ndarray: The role-bound vector
+        Dict[str, np.ndarray]: Dictionary with vectors for condition, implication, and combined rule
     """
-    return bind_vectors(core_vector, role_vector)
-
-def superpose_role_bindings(bindings: Dict[str, np.ndarray], roles: Dict[str, np.ndarray]) -> np.ndarray:
-    """
-    Superpose multiple role bindings into a single vector.
+    # Generate vectors for condition components
+    condition_concept_text = condition.get("concept", "")
+    condition_relation_text = condition.get("relation", "")
+    condition_reference_text = condition.get("reference", "")
     
-    Args:
-        bindings (Dict[str, np.ndarray]): Mapping from role names to vectors
-        roles (Dict[str, np.ndarray]): Dictionary of role vectors
-        
-    Returns:
-        np.ndarray: Combined vector representing all bindings
-    """
-    vectors = []
+    condition_concept_vector = generate_vector(condition_concept_text, dimension)
+    condition_relation_vector = generate_vector(condition_relation_text, dimension)
+    condition_reference_vector = generate_vector(condition_reference_text, dimension)
     
-    for role_name, vector in bindings.items():
-        if role_name in roles:
-            role_vector = roles[role_name]
-            bound = bind_vectors(vector, role_vector)
-            vectors.append(bound)
+    # Bind condition components with their roles
+    concept_role = roles.get("concept")
+    relation_role = roles.get("relation")
+    reference_role = roles.get("reference")
     
-    return bundle_vectors(vectors)
-
-def extract_from_composite(composite: np.ndarray, role_vector: np.ndarray) -> np.ndarray:
-    """
-    Extract a component from a composite vector using a role vector.
+    bound_concept = bind_vectors(condition_concept_vector, concept_role)
+    bound_relation = bind_vectors(condition_relation_vector, relation_role)
+    bound_reference = bind_vectors(condition_reference_vector, reference_role)
     
-    Args:
-        composite (np.ndarray): Composite vector containing bound roles
-        role_vector (np.ndarray): Role vector to extract
-        
-    Returns:
-        np.ndarray: Extracted component vector
-    """
-    return unbind_vectors(composite, role_vector)
-
-def create_conditional_representation(antecedent: np.ndarray, consequent: np.ndarray, 
-                                    roles: Dict[str, np.ndarray]) -> np.ndarray:
-    """
-    Create a vector representation of a conditional (if-then) statement.
+    # Bundle the components to form the condition vector
+    condition_components = [bound_concept, bound_relation, bound_reference]
+    condition_vector = bundle_vectors(condition_components)
     
-    Args:
-        antecedent (np.ndarray): Vector representing the antecedent (if part)
-        consequent (np.ndarray): Vector representing the consequent (then part)
-        roles (Dict[str, np.ndarray]): Dictionary of role vectors
-        
-    Returns:
-        np.ndarray: Vector representing the conditional relationship
-    """
-    # Bind each component with its role
-    antecedent_role = bind_vectors(antecedent, roles["antecedent"])
-    consequent_role = bind_vectors(consequent, roles["consequent"])
+    # Generate vectors for implication components
+    implication_concept_text = implication.get("concept", "")
+    implication_state_text = implication.get("state", "")
     
-    # Bundle the components
-    return bundle_vectors([antecedent_role, consequent_role])
-
-def extract_conditional_parts(conditional: np.ndarray, roles: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """
-    Extract the antecedent and consequent from a conditional representation.
+    implication_concept_vector = generate_vector(implication_concept_text, dimension)
+    implication_state_vector = generate_vector(implication_state_text, dimension)
     
-    Args:
-        conditional (np.ndarray): Vector representing a conditional
-        roles (Dict[str, np.ndarray]): Dictionary of role vectors
-        
-    Returns:
-        Dict[str, np.ndarray]: Dictionary with "antecedent" and "consequent" vectors
-    """
-    antecedent = unbind_vectors(conditional, roles["antecedent"])
-    consequent = unbind_vectors(conditional, roles["consequent"])
+    # Bind implication components with their roles
+    state_role = roles.get("state")
+    
+    bound_impl_concept = bind_vectors(implication_concept_vector, concept_role)
+    bound_impl_state = bind_vectors(implication_state_vector, state_role)
+    
+    # Bundle the components to form the implication vector
+    implication_components = [bound_impl_concept, bound_impl_state]
+    implication_vector = bundle_vectors(implication_components)
+    
+    # Bind condition and implication with their roles
+    condition_role = roles.get("condition")
+    implication_role = roles.get("implication")
+    
+    bound_condition = bind_vectors(condition_vector, condition_role)
+    bound_implication = bind_vectors(implication_vector, implication_role)
+    
+    # Bundle to create the final rule vector
+    rule_components = [bound_condition, bound_implication]
+    rule_vector = bundle_vectors(rule_components)
     
     return {
-        "antecedent": antecedent,
-        "consequent": consequent
+        "condition_vector": condition_vector,
+        "implication_vector": implication_vector,
+        "rule_vector": rule_vector,
+        "component_vectors": {
+            "condition_concept": condition_concept_vector,
+            "condition_relation": condition_relation_vector,
+            "condition_reference": condition_reference_vector,
+            "implication_concept": implication_concept_vector,
+            "implication_state": implication_state_vector
+        }
     }
+
+def create_fact_representation(fact: Dict[str, Any], roles: Dict[str, np.ndarray], 
+                              dimension: int = 10000) -> Dict[str, np.ndarray]:
+    """
+    Create ACEP representation for a factual assertion using vector operations.
+    
+    Args:
+        fact (Dict[str, Any]): Fact content
+        roles (Dict[str, np.ndarray]): Role vectors
+        dimension (int): Vector dimension
+        
+    Returns:
+        Dict[str, np.ndarray]: Dictionary with fact vector and component vectors
+    """
+    # Generate vectors for fact components
+    concept_text = fact.get("concept", "")
+    relation_text = fact.get("relation", "")
+    reference_text = fact.get("reference", "")
+    
+    concept_vector = generate_vector(concept_text, dimension)
+    relation_vector = generate_vector(relation_text, dimension)
+    reference_vector = generate_vector(reference_text, dimension)
+    
+    # Get actual and reference values if they exist
+    actual_value = fact.get("actual_value")
+    reference_value = fact.get("reference_value")
+    
+    if actual_value is not None:
+        actual_text = f"{concept_text}_{actual_value}"
+        actual_vector = generate_vector(actual_text, dimension)
+    else:
+        actual_vector = None
+    
+    if reference_value is not None:
+        reference_value_text = f"{reference_text}_{reference_value}"
+        reference_value_vector = generate_vector(reference_value_text, dimension)
+    else:
+        reference_value_vector = None
+    
+    # Bind components with their roles
+    concept_role = roles.get("concept")
+    relation_role = roles.get("relation")
+    reference_role = roles.get("reference")
+    
+    bound_concept = bind_vectors(concept_vector, concept_role)
+    bound_relation = bind_vectors(relation_vector, relation_role)
+    bound_reference = bind_vectors(reference_vector, reference_role)
+    
+    # Create component vectors list
+    components = [bound_concept, bound_relation, bound_reference]
+    
+    # Add value vectors if they exist
+    if actual_vector is not None and "value" in roles:
+        value_role = roles.get("value")
+        bound_value = bind_vectors(actual_vector, value_role)
+        components.append(bound_value)
+    
+    # Bundle to create the fact vector
+    fact_vector = bundle_vectors(components)
+    
+    # Bind with fact role to indicate this is a fact
+    fact_role = roles.get("fact", generate_vector("fact", dimension))
+    final_fact_vector = bind_vectors(fact_vector, fact_role)
+    
+    return {
+        "fact_vector": final_fact_vector,
+        "component_vectors": {
+            "concept": concept_vector,
+            "relation": relation_vector,
+            "reference": reference_vector,
+            "actual_value": actual_vector,
+            "reference_value": reference_value_vector
+        }
+    }
+
+def cleanse_vector(vector: np.ndarray) -> np.ndarray:
+    """
+    Clean up a vector by removing NaN/Inf values and normalizing.
+    
+    Args:
+        vector (np.ndarray): Vector to cleanse
+        
+    Returns:
+        np.ndarray: Cleansed vector
+    """
+    # Replace any NaN/Inf values with zeros
+    vector = np.nan_to_num(vector)
+    
+    # Normalize the vector
+    return normalize_vector(vector)

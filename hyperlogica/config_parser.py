@@ -2,15 +2,16 @@
 Configuration Parser for Hyperlogica System.
 
 This module handles parsing, validation, and extraction of configuration elements
-from the input JSON file for the Hyperlogica reasoning system.
+from the input JSON file for the Hyperlogica reasoning system, focused on proper ACEP
+representation. This simplified version has removed English-to-ACEP conversion components.
 """
 
 import json
 import os
 import logging
-from typing import Dict, Any, Optional, Union
+from typing import Dict, List, Any, Optional, Union
 from jsonschema import validate, ValidationError
-from .error_handling import success, error
+from .error_handling import success, error, is_success, is_error, get_value, get_error
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -48,16 +49,7 @@ CONFIG_SCHEMA = {
                 "log_level": {"type": "string", "enum": ["debug", "info", "warning", "error"]},
                 "log_path": {"type": "string"},
                 "include_vector_operations": {"type": "boolean"},
-                "include_llm_interactions": {"type": "boolean"},
                 "include_reasoning_steps": {"type": "boolean"}
-            }
-        },
-        "llm": {
-            "type": "object",
-            "properties": {
-                "model": {"type": "string"},
-                "temperature": {"type": "number", "minimum": 0, "maximum": 1},
-                "max_tokens": {"type": "integer", "minimum": 1}
             }
         },
         "input_data": {
@@ -68,9 +60,9 @@ CONFIG_SCHEMA = {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["text"],
+                        "required": ["acep"],
                         "properties": {
-                            "text": {"type": "string"},
+                            "acep": {"type": "object"},
                             "certainty": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     }
@@ -87,9 +79,9 @@ CONFIG_SCHEMA = {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
-                                    "required": ["text"],
+                                    "required": ["acep"],
                                     "properties": {
-                                        "text": {"type": "string"},
+                                        "acep": {"type": "object"},
                                         "certainty": {"type": "number", "minimum": 0, "maximum": 1}
                                     }
                                 }
@@ -142,8 +134,8 @@ def parse_input_config(input_path: str) -> Dict[str, Any]:
         with open(input_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         
-        print(f"Successfully parsed configuration file: {input_path}")
-        return success(config)  # This should return (config, None)
+        logger.info(f"Successfully parsed configuration file: {input_path}")
+        return success(config)  # This returns (config, None)
     except json.JSONDecodeError as e:
         return error(f"Invalid JSON in configuration file: {str(e)}")
     except Exception as e:
@@ -167,7 +159,7 @@ def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         validate(instance=config_dict, schema=CONFIG_SCHEMA)
     except ValidationError as e:
         logger.error(f"Configuration validation error: {e}")
-        raise ValueError(f"Invalid configuration: {e}")
+        return error(f"Invalid configuration: {e}")
     
     # Add default values if not present
     config_dict.setdefault("persistence", {})
@@ -177,18 +169,7 @@ def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     config_dict.setdefault("logging", {})
     config_dict["logging"].setdefault("log_level", "info")
     config_dict["logging"].setdefault("include_vector_operations", False)
-    config_dict["logging"].setdefault("include_llm_interactions", True)
     config_dict["logging"].setdefault("include_reasoning_steps", True)
-    
-    config_dict.setdefault("llm", {})
-    config_dict["llm"].setdefault("model", "gpt-3.5-turbo")
-    config_dict["llm"].setdefault("temperature", 0.0)
-    config_dict["llm"].setdefault("max_tokens", 2000)
-    
-    config_dict.setdefault("output_schema", {})
-    config_dict["output_schema"].setdefault("format", "json")
-    config_dict["output_schema"].setdefault("include_reasoning_trace", True)
-    config_dict["output_schema"].setdefault("include_vector_details", False)
     
     # Add defaults to processing
     config_dict["processing"].setdefault("vector_type", "binary")
@@ -207,7 +188,7 @@ def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 fact.setdefault("certainty", 0.8)  # Default certainty for facts
     
     logger.info("Configuration validated and defaults applied")
-    return config_dict
+    return success(config_dict)
 
 def extract_processing_options(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -266,53 +247,15 @@ def extract_output_schema(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug(f"Extracted output schema: {schema}")
     return schema
 
-def extract_llm_options(config_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract LLM-related options from configuration.
-    
-    Args:
-        config_dict (dict): Validated configuration dictionary.
-        
-    Returns:
-        dict: Dictionary containing LLM options such as model name,
-             temperature, and token limits.
-    """
-    if "llm" not in config_dict:
-        logger.warning("No LLM options found in configuration")
-        return {}
-    
-    llm_options = config_dict["llm"].copy()
-    logger.debug(f"Extracted LLM options: {llm_options}")
-    return llm_options
-
-def extract_logging_options(config_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract logging-related options from configuration.
-    
-    Args:
-        config_dict (dict): Validated configuration dictionary.
-        
-    Returns:
-        dict: Dictionary containing logging options such as log level,
-             log path, and inclusion flags.
-    """
-    if "logging" not in config_dict:
-        logger.warning("No logging options found in configuration")
-        return {}
-    
-    logging_options = config_dict["logging"].copy()
-    logger.debug(f"Extracted logging options: {logging_options}")
-    return logging_options
-
 def extract_rules(config_dict: Dict[str, Any]) -> list:
     """
-    Extract rules from configuration.
+    Extract rule ACEP representations from configuration.
     
     Args:
         config_dict (dict): Validated configuration dictionary.
         
     Returns:
-        list: List of rule dictionaries.
+        list: List of rule ACEP dictionaries.
         
     Raises:
         ValueError: If no rules are found.
@@ -321,25 +264,70 @@ def extract_rules(config_dict: Dict[str, Any]) -> list:
         logger.error("No rules found in configuration")
         raise ValueError("No rules found in configuration")
     
-    rules = config_dict["input_data"]["rules"]
-    logger.info(f"Extracted {len(rules)} rules from configuration")
+    rules = []
+    for rule_data in config_dict["input_data"]["rules"]:
+        # Extract the ACEP representation and certainty
+        acep_repr = rule_data.get("acep", {})
+        certainty = rule_data.get("certainty", 0.9)
+        
+        # Ensure it has certainty in attributes
+        if "attributes" in acep_repr:
+            acep_repr["attributes"]["certainty"] = certainty
+        else:
+            acep_repr["attributes"] = {"certainty": certainty}
+        
+        rules.append(acep_repr)
+    
+    logger.info(f"Extracted {len(rules)} rule ACEP representations from configuration")
     return rules
 
 def extract_entities(config_dict: Dict[str, Any]) -> list:
     """
-    Extract entities from configuration.
+    Extract entities with fact ACEP representations from configuration.
     
     Args:
         config_dict (dict): Validated configuration dictionary.
         
     Returns:
-        list: List of entity dictionaries.
+        list: List of entity dictionaries with ACEP facts.
     """
     if "input_data" not in config_dict or "entities" not in config_dict["input_data"]:
         logger.warning("No entities found in configuration")
         return []
     
-    entities = config_dict["input_data"]["entities"]
+    entities = []
+    for entity_data in config_dict["input_data"]["entities"]:
+        entity_id = entity_data.get("id", "")
+        entity_name = entity_data.get("name", entity_id)
+        
+        # Process facts for this entity
+        facts = []
+        for fact_data in entity_data.get("facts", []):
+            # Extract the ACEP representation and certainty
+            acep_repr = fact_data.get("acep", {})
+            certainty = fact_data.get("certainty", 0.8)
+            
+            # Ensure it has certainty and entity_id in attributes
+            if "attributes" in acep_repr:
+                acep_repr["attributes"]["certainty"] = certainty
+                acep_repr["attributes"]["entity_id"] = entity_id
+            else:
+                acep_repr["attributes"] = {
+                    "certainty": certainty,
+                    "entity_id": entity_id
+                }
+            
+            facts.append(acep_repr)
+        
+        # Create entity with processed facts
+        entity = {
+            "id": entity_id,
+            "name": entity_name,
+            "facts": facts
+        }
+        
+        entities.append(entity)
+    
     logger.info(f"Extracted {len(entities)} entities from configuration")
     return entities
 
@@ -357,18 +345,24 @@ def process_config_file(input_path: str) -> Dict[str, Any]:
         Various exceptions for file not found, invalid JSON, validation errors.
     """
     # Parse the configuration file
-    raw_config = parse_input_config(input_path)
+    raw_config_result = parse_input_config(input_path)
+    if is_error(raw_config_result):
+        raise ValueError(get_error(raw_config_result))
+    
+    raw_config = get_value(raw_config_result)
     
     # Validate and add defaults
-    validated_config = validate_config(raw_config)
+    validated_config_result = validate_config(raw_config)
+    if is_error(validated_config_result):
+        raise ValueError(get_error(validated_config_result))
+    
+    validated_config = get_value(validated_config_result)
     
     # Extract components
     processed_config = {
         "processing_options": extract_processing_options(validated_config),
         "persistence_options": extract_persistence_options(validated_config),
         "output_schema": extract_output_schema(validated_config),
-        "llm_options": extract_llm_options(validated_config),
-        "logging_options": extract_logging_options(validated_config),
         "rules": extract_rules(validated_config),
         "entities": extract_entities(validated_config),
         "raw_config": validated_config  # Include the full validated config for reference

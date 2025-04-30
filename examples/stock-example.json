@@ -1,0 +1,634 @@
+{
+  "processing": {
+    "vector_dimension": 10000,
+    "vector_type": "binary",
+    "reasoning_approach": "vector_chain",
+    "certainty_propagation": "min",
+    "recalibration_enabled": true,
+    "max_reasoning_depth": 5,
+    "domain": "finance",
+    "domain_config": {
+      "positive_outcome": "BUY",
+      "negative_outcome": "SELL",
+      "neutral_outcome": "HOLD"
+    }
+  },
+  "persistence": {
+    "load_previous_state": false,
+    "save_state": true,
+    "state_save_path": "./output/stock_analysis_state.pkl",
+    "vector_store_path": "./output/stock_analysis_vectors.faiss"
+  },
+  "logging": {
+    "log_level": "info",
+    "log_path": "./logs/stock_analysis.log",
+    "include_vector_operations": false,
+    "include_reasoning_steps": true
+  },
+  "input_data": {
+    "rules": [
+      {
+        "acep": {
+          "identifier": "rule_pe_below_industry",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "pe_ratio",
+              "relation": "below",
+              "reference": "industry_average"
+            },
+            "implication": {
+              "concept": "valuation",
+              "state": "undervalued"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.8
+      },
+      {
+        "acep": {
+          "identifier": "rule_revenue_accelerating",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "revenue_growth",
+              "relation": "accelerating",
+              "reference": "consecutive_quarters"
+            },
+            "implication": {
+              "concept": "company",
+              "state": "growth_phase"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.9
+      },
+      {
+        "acep": {
+          "identifier": "rule_margins_expanding",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "profit_margins",
+              "relation": "expanding",
+              "reference": "year_over_year"
+            },
+            "implication": {
+              "concept": "operational_efficiency",
+              "state": "improving"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.85
+      },
+      {
+        "acep": {
+          "identifier": "rule_undervalued_and_growth",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "combined",
+              "relation": "and",
+              "reference": "multiple_conditions",
+              "components": [
+                {
+                  "concept": "valuation",
+                  "state": "undervalued"
+                },
+                {
+                  "concept": "company",
+                  "state": "growth_phase"
+                }
+              ]
+            },
+            "implication": {
+              "concept": "investment_signal",
+              "state": "strong_buy"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.85
+      },
+      {
+        "acep": {
+          "identifier": "rule_undervalued_and_efficiency",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "combined",
+              "relation": "and",
+              "reference": "multiple_conditions",
+              "components": [
+                {
+                  "concept": "valuation",
+                  "state": "undervalued"
+                },
+                {
+                  "concept": "operational_efficiency",
+                  "state": "improving"
+                }
+              ]
+            },
+            "implication": {
+              "concept": "investment_signal",
+              "state": "buy"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.8
+      },
+      {
+        "acep": {
+          "identifier": "rule_debt_decreasing",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "debt_to_equity",
+              "relation": "decreasing",
+              "reference": "year_over_year"
+            },
+            "implication": {
+              "concept": "financial_health",
+              "state": "improving"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.75
+      },
+      {
+        "acep": {
+          "identifier": "rule_high_debt_declining_revenue",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "combined",
+              "relation": "and",
+              "reference": "multiple_conditions",
+              "components": [
+                {
+                  "concept": "debt",
+                  "state": "high"
+                },
+                {
+                  "concept": "revenue",
+                  "state": "declining"
+                }
+              ]
+            },
+            "implication": {
+              "concept": "investment_signal",
+              "state": "sell"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.8
+      },
+      {
+        "acep": {
+          "identifier": "rule_analyst_positive",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "analyst_sentiment",
+              "relation": "predominantly",
+              "reference": "positive"
+            },
+            "implication": {
+              "concept": "market_performance",
+              "state": "outperforming"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.7
+      },
+      {
+        "acep": {
+          "identifier": "rule_outperforming_market",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "stock_performance",
+              "relation": "outperforming",
+              "reference": "market_six_months"
+            },
+            "implication": {
+              "concept": "valuation",
+              "state": "potentially_overvalued"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.6
+      },
+      {
+        "acep": {
+          "identifier": "rule_missed_earnings",
+          "type": "conditional_relation",
+          "content": {
+            "condition": {
+              "concept": "earnings_expectations",
+              "relation": "missed",
+              "reference": "consecutive_quarters"
+            },
+            "implication": {
+              "concept": "investment_signal",
+              "state": "caution"
+            }
+          },
+          "attributes": {
+            "domain": "finance",
+            "source": "financial_analysis"
+          }
+        },
+        "certainty": 0.75
+      }
+    ],
+    "entities": [
+      {
+        "id": "AAPL",
+        "name": "Apple Inc.",
+        "facts": [
+          {
+            "acep": {
+              "identifier": "AAPL_pe_ratio",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "pe_ratio",
+                "relation": "below",
+                "reference": "industry_average",
+                "actual_value": 28.5,
+                "reference_value": 32.8
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "AAPL_revenue_growth",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "revenue_growth",
+                "relation": "accelerating",
+                "reference": "consecutive_quarters",
+                "periods": 4
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.9
+          },
+          {
+            "acep": {
+              "identifier": "AAPL_profit_margins",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "profit_margins",
+                "relation": "expanding",
+                "reference": "year_over_year",
+                "actual_value": 23,
+                "reference_value": 21
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.85
+          },
+          {
+            "acep": {
+              "identifier": "AAPL_debt_to_equity",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "debt_to_equity",
+                "relation": "decreasing",
+                "reference": "year_over_year",
+                "actual_value": 1.2,
+                "reference_value": 1.5
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.9
+          },
+          {
+            "acep": {
+              "identifier": "AAPL_stock_performance",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "stock_performance",
+                "relation": "outperforming",
+                "reference": "market_six_months",
+                "actual_value": 15,
+                "reference_value": 10
+              },
+              "attributes": {
+                "source": "market_data",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "AAPL_analyst_sentiment",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "analyst_sentiment",
+                "relation": "predominantly",
+                "reference": "positive",
+                "percentage": 85
+              },
+              "attributes": {
+                "source": "market_data",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.8
+          }
+        ]
+      },
+      {
+        "id": "MSFT",
+        "name": "Microsoft Corporation",
+        "facts": [
+          {
+            "acep": {
+              "identifier": "MSFT_pe_ratio",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "pe_ratio",
+                "relation": "above",
+                "reference": "industry_average",
+                "actual_value": 34.2,
+                "reference_value": 32.8
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "MSFT_revenue_growth",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "revenue_growth",
+                "relation": "accelerating",
+                "reference": "consecutive_quarters",
+                "periods": 3
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.9
+          },
+          {
+            "acep": {
+              "identifier": "MSFT_profit_margins",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "profit_margins",
+                "relation": "expanding",
+                "reference": "year_over_year",
+                "actual_value": 37,
+                "reference_value": 35
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.85
+          },
+          {
+            "acep": {
+              "identifier": "MSFT_debt_to_equity",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "debt_to_equity",
+                "relation": "stable",
+                "reference": "year_over_year",
+                "actual_value": 0.5,
+                "reference_value": 0.5
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "MSFT_stock_performance",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "stock_performance",
+                "relation": "outperforming",
+                "reference": "market_six_months",
+                "actual_value": 18,
+                "reference_value": 10
+              },
+              "attributes": {
+                "source": "market_data",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "MSFT_analyst_sentiment",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "analyst_sentiment",
+                "relation": "predominantly",
+                "reference": "positive",
+                "percentage": 90
+              },
+              "attributes": {
+                "source": "market_data",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.85
+          }
+        ]
+      },
+      {
+        "id": "GM",
+        "name": "General Motors Company",
+        "facts": [
+          {
+            "acep": {
+              "identifier": "GM_pe_ratio",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "pe_ratio",
+                "relation": "below",
+                "reference": "industry_average",
+                "actual_value": 5.8,
+                "reference_value": 8.4
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "GM_revenue_growth",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "revenue_growth",
+                "relation": "slowing",
+                "reference": "consecutive_quarters",
+                "periods": 2
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.85
+          },
+          {
+            "acep": {
+              "identifier": "GM_profit_margins",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "profit_margins",
+                "relation": "contracting",
+                "reference": "year_over_year",
+                "actual_value": 6,
+                "reference_value": 8
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.9
+          },
+          {
+            "acep": {
+              "identifier": "GM_debt_to_equity",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "debt_to_equity",
+                "relation": "increasing",
+                "reference": "year_over_year",
+                "actual_value": 1.4,
+                "reference_value": 1.2
+              },
+              "attributes": {
+                "source": "financial_statements",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.9
+          },
+          {
+            "acep": {
+              "identifier": "GM_stock_performance",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "stock_performance",
+                "relation": "underperforming",
+                "reference": "market_six_months",
+                "actual_value": -5,
+                "reference_value": 10
+              },
+              "attributes": {
+                "source": "market_data",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.95
+          },
+          {
+            "acep": {
+              "identifier": "GM_analyst_sentiment",
+              "type": "factual_assertion",
+              "content": {
+                "concept": "analyst_sentiment",
+                "relation": "mixed",
+                "reference": "neutral",
+                "percentage": 40
+              },
+              "attributes": {
+                "source": "market_data",
+                "timestamp": "2023-12-31"
+              }
+            },
+            "certainty": 0.8
+          }
+        ]
+      }
+    ]
+  },
+  "output_schema": {
+    "format": "json",
+    "fields": [
+      {"name": "ticker", "type": "string"},
+      {"name": "name", "type": "string"},
+      {"name": "recommendation", "type": "string"},
+      {"name": "certainty", "type": "float"},
+      {"name": "positive_signals", "type": "integer"},
+      {"name": "negative_signals", "type": "integer"},
+      {"name": "reasoning", "type": "object"}
+    ],
+    "include_reasoning_trace": true,
+    "include_vector_details": false
+  }
+}

@@ -1,8 +1,8 @@
 """
 Vector Store Module
 
-Pure functional implementation of a vector store for high-dimensional vectors in Hyperlogica.
-All operations return new copies rather than modifying the original store.
+Pure functional implementation of a vector store for high-dimensional vectors in Hyperlogica,
+using FAISS for efficient storage and retrieval.
 """
 
 import os
@@ -53,16 +53,17 @@ def create_store(dimension: int, index_type: str = "flat") -> Dict[str, Any]:
         "index": index,
         "dimension": dimension,
         "index_type": index_type,
-        "concepts": {},  # Maps identifiers to metadata
-        "concept_ids": [],  # Ordered list of identifiers
+        "items": {},  # Maps identifiers to data (vectors and ACEP representations)
+        "item_ids": [],  # Ordered list of identifiers
         "metadata": {
             "created_at": None,  # Will be set when adding the first vector
             "modified_at": None,  # Will be set when modifying the store
-            "vector_count": 0
+            "item_count": 0
         }
     }
 
-def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metadata: Dict[str, Any]) -> Dict[str, Any]:
+def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, 
+               acep_representation: Dict[str, Any]) -> Dict[str, Any]:
     """
     Add a vector to the store, returning a new store instance.
     
@@ -70,7 +71,7 @@ def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metad
         store (Dict[str, Any]): Vector store dictionary
         identifier (str): Unique identifier for the vector
         vector (np.ndarray): Vector to add to the store
-        metadata (Dict[str, Any]): Additional metadata to associate with the vector
+        acep_representation (Dict[str, Any]): ACEP representation to associate with the vector
         
     Returns:
         Dict[str, Any]: New store with the vector added
@@ -98,20 +99,20 @@ def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metad
     new_store["metadata"]["modified_at"] = current_time
     
     # Check if this identifier already exists
-    if identifier in new_store["concepts"]:
-        # Update the metadata and vector
-        index = new_store["concept_ids"].index(identifier)
-        new_store["concepts"][identifier] = {
+    if identifier in new_store["items"]:
+        # Update the vector and ACEP representation
+        index = new_store["item_ids"].index(identifier)
+        new_store["items"][identifier] = {
             "vector": normalized_vector,
-            "metadata": metadata
+            "acep": acep_representation
         }
         
         # For most index types, we need to rebuild the index
         # This is inefficient for large stores, but necessary for correctness
         if new_store["index_type"] != "flat":
             vectors = []
-            for concept_id in new_store["concept_ids"]:
-                vectors.append(new_store["concepts"][concept_id]["vector"])
+            for item_id in new_store["item_ids"]:
+                vectors.append(new_store["items"][item_id]["vector"])
             
             new_store["index"].reset()
             if len(vectors) > 0:
@@ -124,20 +125,20 @@ def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metad
         else:
             # For flat indices, we can rebuild it from scratch (still immutable)
             vectors = []
-            for concept_id in new_store["concept_ids"]:
-                vectors.append(new_store["concepts"][concept_id]["vector"])
+            for item_id in new_store["item_ids"]:
+                vectors.append(new_store["items"][item_id]["vector"])
             
             new_store["index"] = faiss.IndexFlatIP(new_store["dimension"])
             if vectors:
                 new_store["index"].add(np.array(vectors).astype('float32'))
     else:
         # Add new vector
-        new_store["concept_ids"].append(identifier)
-        new_store["concepts"][identifier] = {
+        new_store["item_ids"].append(identifier)
+        new_store["items"][identifier] = {
             "vector": normalized_vector,
-            "metadata": metadata
+            "acep": acep_representation
         }
-        new_store["metadata"]["vector_count"] += 1
+        new_store["metadata"]["item_count"] += 1
         
         # Add to index
         new_store["index"].add(np.array([normalized_vector]).astype('float32'))
@@ -146,26 +147,26 @@ def add_vector(store: Dict[str, Any], identifier: str, vector: np.ndarray, metad
 
 def get_vector(store: Dict[str, Any], identifier: str) -> Dict[str, Any]:
     """
-    Retrieve a vector and its metadata by identifier.
+    Retrieve a vector and its ACEP representation by identifier.
     
     Args:
         store (Dict[str, Any]): Vector store dictionary
         identifier (str): Unique identifier for the vector to retrieve
         
     Returns:
-        Dict[str, Any]: Dictionary containing the vector and its metadata
+        Dict[str, Any]: Dictionary containing the vector and ACEP representation
         
     Raises:
         KeyError: If the identifier does not exist in the store
     """
-    if identifier not in store["concepts"]:
+    if identifier not in store["items"]:
         raise KeyError(f"Identifier not found in store: {identifier}")
     
-    concept = store["concepts"][identifier]
+    item = store["items"][identifier]
     return {
         "identifier": identifier,
-        "vector": concept["vector"],
-        "metadata": concept["metadata"]
+        "vector": item["vector"],
+        "acep": item["acep"]
     }
 
 def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n: int = 10) -> List[Dict[str, Any]]:
@@ -178,14 +179,14 @@ def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n:
         top_n (int): Number of most similar vectors to return
         
     Returns:
-        List[Dict[str, Any]]: List of dictionaries containing similar vectors and metadata
+        List[Dict[str, Any]]: List of dictionaries containing similar vectors and their ACEP representations
     """
     # Validate dimensions
     if query_vector.shape[0] != store["dimension"]:
         raise ValueError(f"Query vector dimension {query_vector.shape[0]} doesn't match store dimension {store['dimension']}")
     
     # Empty store check
-    if len(store["concept_ids"]) == 0:
+    if len(store["item_ids"]) == 0:
         return []
     
     # Normalize query vector
@@ -196,7 +197,7 @@ def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n:
     normalized_query = query_vector / query_norm
     
     # Adjust top_n to not exceed number of vectors in store
-    adjusted_top_n = min(top_n, len(store["concept_ids"]))
+    adjusted_top_n = min(top_n, len(store["item_ids"]))
     
     # Search for similar vectors
     distances, indices = store["index"].search(np.array([normalized_query]).astype('float32'), adjusted_top_n)
@@ -208,18 +209,64 @@ def find_similar_vectors(store: Dict[str, Any], query_vector: np.ndarray, top_n:
         if idx < 0:  # Some indices might be -1 if there aren't enough results
             continue
             
-        concept_id = store["concept_ids"][idx]
-        concept = store["concepts"][concept_id]
+        item_id = store["item_ids"][idx]
+        item = store["items"][item_id]
         similarity = float(distances[0][i])  # Convert to Python float for serialization
         
         results.append({
-            "identifier": concept_id,
-            "vector": concept["vector"],
-            "metadata": concept["metadata"],
+            "identifier": item_id,
+            "vector": item["vector"],
+            "acep": item["acep"],
             "similarity": similarity
         })
     
     return results
+
+def filter_store_by_type(store: Dict[str, Any], acep_type: str) -> Dict[str, Any]:
+    """
+    Filter store to only include items of a specific ACEP type.
+    
+    Args:
+        store (Dict[str, Any]): Vector store dictionary
+        acep_type (str): ACEP type to filter by (e.g., "conditional_relation", "factual_assertion")
+        
+    Returns:
+        Dict[str, Any]: Filtered copy of the store
+    """
+    # Create a new store with the same configuration
+    filtered_store = create_store(store["dimension"], store["index_type"])
+    
+    # Add items that match the type
+    for item_id in store["item_ids"]:
+        item = store["items"][item_id]
+        if item["acep"].get("type") == acep_type:
+            # Add to filtered store (this will rebuild the index as needed)
+            filtered_store = add_vector(filtered_store, item_id, item["vector"], item["acep"])
+    
+    return filtered_store
+
+def filter_store_by_entity(store: Dict[str, Any], entity_id: str) -> Dict[str, Any]:
+    """
+    Filter store to only include items related to a specific entity.
+    
+    Args:
+        store (Dict[str, Any]): Vector store dictionary
+        entity_id (str): Entity ID to filter by
+        
+    Returns:
+        Dict[str, Any]: Filtered copy of the store
+    """
+    # Create a new store with the same configuration
+    filtered_store = create_store(store["dimension"], store["index_type"])
+    
+    # Add items that match the entity
+    for item_id in store["item_ids"]:
+        item = store["items"][item_id]
+        if item["acep"].get("attributes", {}).get("entity_id") == entity_id:
+            # Add to filtered store (this will rebuild the index as needed)
+            filtered_store = add_vector(filtered_store, item_id, item["vector"], item["acep"])
+    
+    return filtered_store
 
 def save_store(store: Dict[str, Any], path: str) -> bool:
     """
@@ -287,34 +334,23 @@ def load_store(path: str) -> Dict[str, Any]:
     except Exception as e:
         raise ValueError(f"Failed to load vector store: {str(e)}")
 
-def merge_stores(store_a: Dict[str, Any], store_b: Dict[str, Any]) -> Dict[str, Any]:
+def get_all_items(store: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Merge two vector stores into a new store.
+    Get all items from the store.
     
     Args:
-        store_a (Dict[str, Any]): First vector store
-        store_b (Dict[str, Any]): Second vector store
+        store (Dict[str, Any]): Vector store dictionary
         
     Returns:
-        Dict[str, Any]: New merged vector store
-        
-    Raises:
-        ValueError: If the stores have different dimensions
+        List[Dict[str, Any]]: List of all items in the store
     """
-    if store_a["dimension"] != store_b["dimension"]:
-        raise ValueError(f"Stores have different dimensions: {store_a['dimension']} vs {store_b['dimension']}")
+    items = []
+    for item_id in store["item_ids"]:
+        item = store["items"][item_id]
+        items.append({
+            "identifier": item_id,
+            "vector": item["vector"],
+            "acep": item["acep"]
+        })
     
-    # Create a new store with the same configuration as store_a
-    merged_store = create_store(store_a["dimension"], store_a["index_type"])
-    
-    # Add vectors from store_a
-    for concept_id in store_a["concept_ids"]:
-        concept = store_a["concepts"][concept_id]
-        merged_store = add_vector(merged_store, concept_id, concept["vector"], concept["metadata"])
-    
-    # Add vectors from store_b (potentially overwriting if IDs clash)
-    for concept_id in store_b["concept_ids"]:
-        concept = store_b["concepts"][concept_id]
-        merged_store = add_vector(merged_store, concept_id, concept["vector"], concept["metadata"])
-    
-    return merged_store
+    return items

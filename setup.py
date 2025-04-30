@@ -2,15 +2,15 @@ from setuptools import setup, find_packages
 
 setup(
     name="hyperlogica",
-    version="0.1.0",
-    description="Vector-based reasoning system using hyperdimensional computing",
-    author="Chroma Capital Management",
-    author_email="systems@chromacapital.com",
+    version="0.2.0",
+    description="ACEP-based vector reasoning system using hyperdimensional computing",
+    author="Hyperlogica Team",
+    author_email="info@hyperlogica.ai",
     packages=find_packages(),
     install_requires=[
         "numpy>=1.20.0",
         "faiss-cpu>=1.7.0",  # or faiss-gpu for GPU support
-        "openai>=0.27.0",
+        "jsonschema>=4.0.0",
         "python-dotenv>=0.19.0",
         "requests>=2.26.0",
         "tqdm>=4.62.0",

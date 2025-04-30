@@ -3,9 +3,15 @@
 Hyperlogica: Main Processing Pipeline
 
 This module implements the central processing pipeline for the Hyperlogica system,
-orchestrating the flow from configuration parsing to output generation. It integrates
-vector operations, LLM interfacing, reasoning, and state management using hyperdimensional
-computing principles.
+orchestrating the flow from configuration parsing to output generation. The system
+is redesigned to work with direct ACEP representations without LLM conversion.
+
+The pipeline includes:
+1. Configuration parsing
+2. Vector store initialization
+3. Processing of rule and fact vectors
+4. Vector-chain reasoning
+5. Result generation with explanations
 """
 
 import os
@@ -21,19 +27,22 @@ from .config_parser import parse_input_config, validate_config, extract_processi
 from .config_parser import extract_persistence_options, extract_output_schema
 from .vector_operations import (
     generate_vector, normalize_vector, bind_vectors, unbind_vectors,
-    bundle_vectors, calculate_similarity
+    bundle_vectors, calculate_similarity, create_role_vectors,
+    create_conditional_representation, create_fact_representation
 )
-from .vector_store import create_store, add_vector, get_vector, save_store, load_store
-from .llm_interface import convert_english_to_acep, convert_acep_to_english, generate_explanation
-from .reasoning_engine import apply_modus_ponens, calculate_certainty, recalibrate_certainty
+from .vector_store import (
+    create_store, add_vector, get_vector, filter_store_by_type,
+    filter_store_by_entity, find_similar_vectors, save_store, load_store
+)
+from .reasoning_engine import apply_vector_chain_reasoning, generate_explanation
 from .state_management import (
-    create_state, add_concept_to_state, add_relation_to_state, 
-    add_conclusion_to_state, save_state, load_state
+    create_state, add_rule_to_state, add_fact_to_state, 
+    add_conclusion_to_state, add_reasoning_trace, save_state, load_state
 )
-from .logging_utils import initialize_logger, log_reasoning_step, log_llm_interaction
-from .reasoning_approaches import apply_reasoning_approach
 from .error_handling import success, error, is_success, is_error, get_value, get_error
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -65,27 +74,6 @@ def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None
     output_path = options.get("output_path", None)
     timeout = options.get("timeout", 3600)  # Default timeout: 1 hour
     
-    # Get the log_path from options and make it absolute
-    log_path = options.get("log_path", "./logs")
-    log_path = os.path.abspath(log_path)
-    
-    # Create logs directory if it doesn't exist
-    os.makedirs(log_path, exist_ok=True)
-    
-    # Initialize logger early
-    logger = initialize_logger(
-        log_path=log_path,
-        log_level="info"
-    )
-
-    # Add this after initializing the logger
-    if not isinstance(logger, logging.Logger):
-        print("Warning: Logger initialization failed. Using basic logging.")
-        logger = logging.getLogger("hyperlogica.main")
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        logger.addHandler(handler)
-    
     try:
         # Step 1: Parse and validate configuration
         if verbose:
@@ -96,133 +84,307 @@ def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None
             raise ValueError(f"Failed to parse configuration: {get_error(config_result)}")
         
         config = get_value(config_result)
-        validated_config = validate_config(config)
+        validated_result = validate_config(config)
+        if is_error(validated_result):
+            raise ValueError(f"Failed to validate configuration: {get_error(validated_result)}")
         
-        # Extract different parts of the configuration
+        validated_config = get_value(validated_result)
+        
+        # Step 2: Extract configuration components
         processing_options = extract_processing_options(validated_config)
         persistence_options = extract_persistence_options(validated_config)
         output_schema = extract_output_schema(validated_config)
         
-        # Update logger with config settings
+        # Get vector dimension and domain config
+        vector_dim = processing_options.get("vector_dimension", 10000)
+        domain_config = processing_options.get("domain_config", {})
+        
+        # Set up logging
         log_config = validated_config.get("logging", {})
-        logger = initialize_logger(
-            log_path=log_config.get("log_path", "./logs"),
-            log_level=log_config.get("log_level", "info")
-        )
-        logger.info(f"Configuration loaded from {input_path}")
+        log_level = log_config.get("log_level", "info")
+        logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
         
-        # Step 2: Initialize vector store and state
-        vector_store = load_or_create_vector_store(persistence_options, processing_options)
-        state = load_or_create_state(persistence_options)
+        if verbose:
+            print("Configuration loaded and validated successfully.")
         
-        # Step 3: Process rules using hyperdimensional computing
+        # Step 3: Initialize vector store and state
+        if verbose:
+            print("Initializing vector store and state...")
+        
+        # Create role vectors for structured binding
+        roles = create_role_vectors(vector_dim)
+        
+        # Create or load vector store
+        vector_store = None
+        if persistence_options.get("load_previous_state", False):
+            store_path = persistence_options.get("vector_store_path", "./output/vector_store.faiss")
+            if os.path.exists(store_path):
+                try:
+                    vector_store = load_store(store_path)
+                    if verbose:
+                        print(f"Loaded vector store from {store_path}")
+                except Exception as e:
+                    logger.error(f"Failed to load vector store: {e}")
+                    vector_store = None
+        
+        if vector_store is None:
+            vector_store = create_store(vector_dim)
+            if verbose:
+                print(f"Created new vector store with dimension {vector_dim}")
+        
+        # Create or load state
+        state = None
+        if persistence_options.get("load_previous_state", False):
+            state_path = persistence_options.get("state_save_path", "./output/state.pkl")
+            if os.path.exists(state_path):
+                try:
+                    state = load_state(state_path)
+                    if verbose:
+                        print(f"Loaded state from {state_path}")
+                except Exception as e:
+                    logger.error(f"Failed to load state: {e}")
+                    state = None
+        
+        if state is None:
+            session_id = f"session_{int(time.time())}"
+            state = create_state(session_id)
+            if verbose:
+                print(f"Created new state with session ID {session_id}")
+        
+        # Step 4: Process rules
+        if verbose:
+            print("Processing rules...")
+        
         rules_data = validated_config.get("input_data", {}).get("rules", [])
-        llm_options = validated_config.get("llm", {})
+        processed_rules = []
+        
+        for rule_idx, rule_data in enumerate(rules_data):
+            # Get the ACEP representation
+            acep_repr = rule_data.get("acep", {})
+            certainty = rule_data.get("certainty", 0.9)
+            
+            # Ensure it has the right structure
+            if acep_repr.get("type") != "conditional_relation":
+                logger.warning(f"Rule {rule_idx} does not have type 'conditional_relation', skipping")
+                continue
+            
+            # Extract condition and implication
+            content = acep_repr.get("content", {})
+            condition = content.get("condition", {})
+            implication = content.get("implication", {})
+            
+            if not condition or not implication:
+                logger.warning(f"Rule {rule_idx} is missing condition or implication, skipping")
+                continue
+            
+            # Generate vectors for this rule
+            rule_vectors = create_conditional_representation(condition, implication, roles, vector_dim)
+            
+            # Create the complete rule object
+            rule_id = acep_repr.get("identifier", f"rule_{rule_idx}")
+            rule = {
+                "identifier": rule_id,
+                "vector": rule_vectors["rule_vector"],
+                "condition_vector": rule_vectors["condition_vector"],
+                "implication_vector": rule_vectors["implication_vector"],
+                "component_vectors": rule_vectors["component_vectors"],
+                "acep": acep_repr,
+                "attributes": {
+                    "certainty": certainty,
+                    "conditional": True
+                }
+            }
+            
+            # Add to the vector store
+            vector_store = add_vector(vector_store, rule_id, rule_vectors["rule_vector"], acep_repr)
+            
+            # Add to state
+            state = add_rule_to_state(state, rule)
+            
+            # Add to processed rules
+            processed_rules.append(rule)
+            
+            if verbose and (rule_idx + 1) % 10 == 0:
+                print(f"Processed {rule_idx + 1}/{len(rules_data)} rules")
         
         if verbose:
-            print(f"Processing {len(rules_data)} rules using hyperdimensional computing...")
-            
-        logger.info(f"Processing {len(rules_data)} rules...")
-        processed_rules = process_rules(rules_data, llm_options, vector_store, state, processing_options)
-        logger.info(f"Processed {len(processed_rules)} rules")
+            print(f"Processed {len(processed_rules)} rules")
         
-        # Step 4: Process entities and facts
+        # Step 5: Process entities and facts
+        if verbose:
+            print("Processing entities and facts...")
+        
         entities_data = validated_config.get("input_data", {}).get("entities", [])
-        entity_count = len(entities_data)
-        
-        if verbose:
-            print(f"Processing {entity_count} entities...")
-            
-        logger.info(f"Processing {entity_count} entities...")
-        
         results = []
-        conclusions_count = 0
         
-        for entity_index, entity in enumerate(entities_data):
-            entity_id = entity.get("id", f"entity_{entity_index}")
-            entity_name = entity.get("name", entity_id)
-            entity_facts = entity.get("facts", [])
+        for entity_idx, entity_data in enumerate(entities_data):
+            entity_id = entity_data.get("id", f"entity_{entity_idx}")
+            entity_name = entity_data.get("name", entity_id)
             
             if verbose:
-                print(f"Processing entity {entity_id} ({entity_index+1}/{entity_count})")
+                print(f"Processing entity {entity_id} ({entity_idx+1}/{len(entities_data)})")
+            
+            # Process facts for this entity
+            facts_data = entity_data.get("facts", [])
+            processed_facts = []
+            
+            for fact_idx, fact_data in enumerate(facts_data):
+                # Get the ACEP representation
+                acep_repr = fact_data.get("acep", {})
+                certainty = fact_data.get("certainty", 0.8)
                 
-            logger.info(f"Processing entity {entity_id} ({entity_index+1}/{entity_count}) with {len(entity_facts)} facts")
+                # Ensure it has the right structure
+                if acep_repr.get("type") != "factual_assertion":
+                    logger.warning(f"Fact {fact_idx} does not have type 'factual_assertion', skipping")
+                    continue
+                
+                # Extract fact content
+                content = acep_repr.get("content", {})
+                
+                # Generate vectors for this fact
+                fact_vectors = create_fact_representation(content, roles, vector_dim)
+                
+                # Create the complete fact object
+                fact_id = acep_repr.get("identifier", f"{entity_id}_fact_{fact_idx}")
+                fact = {
+                    "identifier": fact_id,
+                    "vector": fact_vectors["fact_vector"],
+                    "component_vectors": fact_vectors["component_vectors"],
+                    "acep": acep_repr,
+                    "attributes": {
+                        "certainty": certainty,
+                        "entity_id": entity_id
+                    }
+                }
+                
+                # Add to the vector store
+                vector_store = add_vector(vector_store, fact_id, fact_vectors["fact_vector"], acep_repr)
+                
+                # Add to state
+                state = add_fact_to_state(state, fact)
+                
+                # Add to processed facts
+                processed_facts.append(fact)
+            
+            if verbose:
+                print(f"Processed {len(processed_facts)} facts for entity {entity_id}")
             
             # Check timeout
-            if time.time() - start_time > timeout:
+            current_time = time.time()
+            if current_time - start_time > timeout:
                 raise TimeoutError(f"Processing timeout after {timeout} seconds")
             
-            # Process entity facts with vector operations
-            processed_facts = process_facts(entity_facts, llm_options, vector_store, state, processing_options, entity_id)
-            logger.info(f"Processed {len(processed_facts)} facts for entity {entity_id}")
-            
-            # Apply vector-based reasoning to derive conclusions
-            reasoning_approach = processing_options.get("reasoning_approach", "vector_weighted")
-            
+            # Step 6: Apply vector-chain reasoning
             if verbose:
-                print(f"Applying {reasoning_approach} reasoning approach...")
-                
-            logger.info(f"Applying {reasoning_approach} reasoning approach...")
+                print(f"Applying vector-chain reasoning for entity {entity_id}")
             
-            reasoning_result = apply_reasoning(
-                processed_rules, 
-                processed_facts, 
-                reasoning_approach, 
-                vector_store, 
-                state, 
-                processing_options
+            max_depth = processing_options.get("max_reasoning_depth", 5)
+            similarity_threshold = processing_options.get("similarity_threshold", 0.7)
+            
+            reasoning_result = apply_vector_chain_reasoning(
+                processed_rules,
+                processed_facts,
+                entity_id,
+                roles,
+                max_depth,
+                similarity_threshold
             )
             
-            # Generate output for this entity
-            entity_conclusions = reasoning_result.get("conclusions", [])
-            conclusions_count += len(entity_conclusions)
+            # Step 7: Add reasoning results to state
+            for conclusion in reasoning_result.get("conclusions", []):
+                state = add_conclusion_to_state(state, conclusion)
+            
+            # Add reasoning trace to state
+            trace = {
+                "entity_id": entity_id,
+                "timestamp": datetime.now().isoformat(),
+                "chains": reasoning_result.get("chains", []),
+                "outcome": reasoning_result.get("outcome", "NEUTRAL"),
+                "certainty": reasoning_result.get("certainty", 0.5)
+            }
+            state = add_reasoning_trace(state, trace)
+            
+            # Step 8: Generate explanation
+            explanation = generate_explanation(reasoning_result)
+            
+            # Map outcome to domain-specific values
+            outcome_mapping = {
+                "POSITIVE": domain_config.get("positive_outcome", "BUY"),
+                "NEGATIVE": domain_config.get("negative_outcome", "SELL"),
+                "NEUTRAL": domain_config.get("neutral_outcome", "HOLD")
+            }
+            
+            final_outcome = outcome_mapping.get(reasoning_result.get("outcome", "NEUTRAL"))
+            
+            # Step 9: Prepare entity result
+            entity_result = {
+                "entity_id": entity_id,
+                "entity_name": entity_name,
+                "outcome": final_outcome,
+                "certainty": reasoning_result.get("certainty", 0.5),
+                "reasoning": {
+                    "explanation": explanation,
+                    "positive_signals": len(reasoning_result.get("positive_conclusions", [])),
+                    "negative_signals": len(reasoning_result.get("negative_conclusions", [])),
+                    "neutral_signals": len(reasoning_result.get("neutral_conclusions", [])),
+                    "chains": len(reasoning_result.get("chains", [])),
+                    "evidence_weights": reasoning_result.get("evidence_weights", {})
+                }
+            }
+            
+            results.append(entity_result)
             
             if verbose:
-                print(f"Generated {len(entity_conclusions)} conclusions for {entity_id}")
-                
-            logger.info(f"Generated {len(entity_conclusions)} conclusions for {entity_id}")
-            
-            entity_output = generate_entity_output(
-                entity_id, 
-                entity_name, 
-                reasoning_result, 
-                output_schema, 
-                llm_options
-            )
-            
-            results.append(entity_output)
+                print(f"Completed reasoning for {entity_id}: {final_outcome} with {entity_result['certainty']:.2f} certainty")
         
-        # Step 5: Save state if configured
+        # Step 10: Save state and vector store if configured
         if persistence_options.get("save_state", False):
-            state_save_path = persistence_options.get("state_save_path", "./state.pkl")
-            logger.info(f"Saving state to {state_save_path}")
-            save_state(state, state_save_path)
+            state_path = persistence_options.get("state_save_path", "./output/state.pkl")
+            save_state(state, state_path)
+            
+            store_path = persistence_options.get("vector_store_path", "./output/vector_store.faiss")
+            save_store(vector_store, store_path)
+            
+            if verbose:
+                print(f"Saved state and vector store")
         
-        # Step 6: Compile overall results
+        # Step 11: Prepare final results
         processing_time = time.time() - start_time
         
         final_results = {
-            "entities_processed": entity_count,
-            "conclusions_generated": conclusions_count,
+            "entities_processed": len(entities_data),
+            "conclusions_generated": sum(r["reasoning"]["positive_signals"] + r["reasoning"]["negative_signals"] + r["reasoning"]["neutral_signals"] for r in results),
             "processing_time": processing_time,
             "results": results,
             "metadata": {
                 "timestamp": datetime.now().isoformat(),
                 "configuration_file": input_path,
-                "reasoning_approach": reasoning_approach,
-                "vector_dimension": processing_options.get("vector_dimension", 10000)
+                "reasoning_approach": "vector_chain",
+                "vector_dimension": vector_dim
             }
         }
         
         # Save results if output path provided
         if output_path:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            
+            # Handle numpy arrays in the results
+            def numpy_converter(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, np.integer):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                raise TypeError(f"Unserializable object: {type(obj)}")
+            
+            # Write results to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(final_results, f, default=numpy_converter, indent=2)
+            
             if verbose:
-                print(f"Saving results to {output_path}...")
-                
-            logger.info(f"Saving results to {output_path}")
-            save_results(final_results, output_path)
-        
-        logger.info(f"Processing completed in {processing_time:.2f} seconds")
+                print(f"Saved results to {output_path}")
         
         if verbose:
             print(f"Processing completed in {processing_time:.2f} seconds")
@@ -231,472 +393,19 @@ def process_input_file(input_path: str, options: Optional[Dict[str, Any]] = None
     
     except Exception as e:
         logger.error(f"Error in processing: {str(e)}", exc_info=True)
-        raise
-
-
-def load_or_create_vector_store(persistence_config: Dict[str, Any], processing_config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Load an existing vector store or create a new one with the specified dimension.
-    
-    Args:
-        persistence_config (dict): Configuration for persistence settings
-        processing_config (dict): Configuration for processing settings
         
-    Returns:
-        dict: Vector store dictionary, either loaded from disk or newly created
-    """
-    load_previous_store = persistence_config.get("load_previous_store", False)
-    previous_store_path = persistence_config.get("previous_store_path", "")
-    vector_dimension = processing_config.get("vector_dimension", 10000)
-    index_type = processing_config.get("index_type", "flat")
-    
-    if load_previous_store and os.path.exists(previous_store_path):
-        logging.info(f"Loading existing vector store from {previous_store_path}")
-        try:
-            return load_store(previous_store_path)
-        except Exception as e:
-            logging.warning(f"Failed to load vector store: {str(e)}. Creating new store.")
-    
-    logging.info(f"Creating new vector store with dimension={vector_dimension}, index_type={index_type}")
-    return create_store(dimension=vector_dimension, index_type=index_type)
-
-
-def load_or_create_state(config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Load an existing state or create a new one with ACEP state format.
-    
-    Args:
-        config (dict): Configuration dictionary containing persistence options
-        
-    Returns:
-        dict: State dictionary, either loaded from disk or newly created
-    """
-    load_previous_state = config.get("load_previous_state", False)
-    previous_state_path = config.get("previous_state_path", "")
-    session_id = config.get("session_id", f"session_{int(time.time())}")
-    
-    if load_previous_state and os.path.exists(previous_state_path):
-        logging.info(f"Loading existing state from {previous_state_path}")
-        try:
-            return load_state(previous_state_path)
-        except Exception as e:
-            logging.warning(f"Failed to load state: {str(e)}. Creating new state.")
-    
-    logging.info(f"Creating new ACEP state with session_id={session_id}")
-    return create_state(session_id)
-
-
-def process_rules(rules: List[Dict[str, Any]], 
-                 llm_options: Dict[str, Any], 
-                 store: Dict[str, Any], 
-                 state: Dict[str, Any], 
-                 config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Process rules and add them to the store and state as vector representations.
-    
-    Args:
-        rules (list): List of rule dictionaries from the input configuration
-        llm_options (dict): LLM interface configuration for converting rules to ACEP
-        store (dict): Vector store where rule vectors will be stored
-        state (dict): State dictionary where rule representations will be added
-        config (dict): Processing configuration options
-        
-    Returns:
-        list: List of processed rule representations with vector IDs and metadata
-    """
-    processed_rules = []
-    
-    for rule_index, rule in enumerate(rules):
-        rule_text = rule.get("text", "")
-        rule_certainty = rule.get("certainty", 0.9)  # Default high certainty for rules
-        
-        if not rule_text:
-            logging.warning(f"Skipping empty rule at index {rule_index}")
-            continue
-        
-        logging.info(f"Processing rule [{rule_index+1}/{len(rules)}]: {rule_text[:50]}...")
-        
-        try:
-            # Convert rule to ACEP representation using LLM
-            rule_context = {
-                "domain": config.get("domain", "general"),
-                "certainty": rule_certainty,
-                "vector_dimension": config.get("vector_dimension", 10000)
+        # Return error information
+        return {
+            "error": str(e),
+            "entities_processed": 0,
+            "conclusions_generated": 0,
+            "processing_time": time.time() - start_time,
+            "results": [],
+            "metadata": {
+                "timestamp": datetime.now().isoformat(),
+                "error": True
             }
-            
-            acep_representation = convert_english_to_acep(rule_text, rule_context, llm_options)
-            
-            # Ensure certainty from original rule is preserved
-            acep_representation["attributes"]["certainty"] = rule_certainty
-            
-            # Generate or validate vector for the rule
-            vector_dimension = config.get("vector_dimension", 10000)
-            
-            if "vector" not in acep_representation:
-                vector = generate_vector(acep_representation["identifier"], vector_dimension)
-                acep_representation["vector"] = normalize_vector(vector)
-            
-            # Add to vector store
-            add_vector(
-                store, 
-                acep_representation["identifier"], 
-                acep_representation["vector"], 
-                {
-                    "text": rule_text,
-                    "type": "rule",
-                    "certainty": rule_certainty,
-                    "acep": acep_representation
-                }
-            )
-            
-            # Add to state
-            add_concept_to_state(state, acep_representation)
-            
-            # Save to processed rules
-            processed_rules.append(acep_representation)
-            
-            logging.info(f"Rule processed successfully: {acep_representation['identifier']}")
-            
-        except Exception as e:
-            logging.error(f"Failed to process rule: {str(e)}")
-            # Continue processing other rules
-    
-    return processed_rules
-
-
-def process_facts(facts: List[Dict[str, Any]], 
-                 llm_options: Dict[str, Any], 
-                 store: Dict[str, Any], 
-                 state: Dict[str, Any], 
-                 config: Dict[str, Any],
-                 entity_id: str) -> List[Dict[str, Any]]:
-    """
-    Process facts and add them to the store and state as vector representations.
-    
-    Args:
-        facts (list): List of fact dictionaries from the input configuration
-        llm_options (dict): LLM interface configuration for converting facts to ACEP
-        store (dict): Vector store where fact vectors will be stored
-        state (dict): State dictionary where fact representations will be added
-        config (dict): Processing configuration options
-        entity_id (str): Identifier of the entity to which the facts belong
-        
-    Returns:
-        list: List of processed fact representations with vector IDs and metadata
-    """
-    processed_facts = []
-    
-    for fact_index, fact in enumerate(facts):
-        fact_text = fact.get("text", "")
-        fact_certainty = fact.get("certainty", 0.9)  # Default high certainty for facts
-        
-        if not fact_text:
-            logging.warning(f"Skipping empty fact at index {fact_index}")
-            continue
-        
-        logging.info(f"Processing fact [{fact_index+1}/{len(facts)}] for entity {entity_id}: {fact_text[:50]}...")
-        
-        try:
-            # Convert fact to ACEP representation using LLM
-            fact_context = {
-                "domain": config.get("domain", "general"),
-                "entity_id": entity_id,
-                "certainty": fact_certainty,
-                "vector_dimension": config.get("vector_dimension", 10000)
-            }
-            
-            acep_representation = convert_english_to_acep(fact_text, fact_context, llm_options)
-            
-            # Ensure certainty from original fact is preserved
-            acep_representation["attributes"]["certainty"] = fact_certainty
-            
-            # Ensure entity_id is associated with the fact
-            acep_representation["attributes"]["entity_id"] = entity_id
-            
-            # Generate or validate vector for the fact
-            vector_dimension = config.get("vector_dimension", 10000)
-            
-            if "vector" not in acep_representation:
-                vector = generate_vector(acep_representation["identifier"], vector_dimension)
-                acep_representation["vector"] = normalize_vector(vector)
-            
-            # Add to vector store
-            add_vector(
-                store, 
-                acep_representation["identifier"], 
-                acep_representation["vector"], 
-                {
-                    "text": fact_text,
-                    "type": "fact",
-                    "entity_id": entity_id,
-                    "certainty": fact_certainty,
-                    "acep": acep_representation
-                }
-            )
-            
-            # Add to state
-            add_concept_to_state(state, acep_representation)
-            
-            # Save to processed facts
-            processed_facts.append(acep_representation)
-            
-            logging.info(f"Fact processed successfully: {acep_representation['identifier']}")
-            
-        except Exception as e:
-            logging.error(f"Failed to process fact: {str(e)}")
-            # Continue processing other facts
-    
-    return processed_facts
-
-
-def apply_reasoning(rules: List[Dict[str, Any]], 
-                   facts: List[Dict[str, Any]], 
-                   approach: str, 
-                   store: Dict[str, Any], 
-                   state: Dict[str, Any], 
-                   config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Apply reasoning to derive conclusions using the specified approach.
-    
-    Args:
-        rules (list): List of processed rule representations
-        facts (list): List of processed fact representations
-        approach (str): Reasoning approach to use
-        store (dict): Vector store containing rule and fact vectors
-        state (dict): State dictionary for tracking reasoning context
-        config (dict): Configuration dictionary containing reasoning settings
-        
-    Returns:
-        dict: Dictionary containing derived conclusions and reasoning results
-    """
-    logging.info(f"Applying reasoning approach: {approach}")
-    
-    # Filter facts to only include those relevant to the current entity if needed
-    entity_id = facts[0]["attributes"]["entity_id"] if facts and len(facts) > 0 else None
-    
-    # Apply the selected reasoning approach
-    try:
-        # Use enhanced reasoning approaches
-        result = apply_reasoning_approach(approach, rules, facts, store, state, config)
-        
-        # Store all generated conclusions in the state
-        for conclusion in result.get("conclusions", []):
-            try:
-                # Add each conclusion to state
-                add_conclusion_to_state(state, conclusion)
-            except Exception as e:
-                logging.warning(f"Error adding conclusion to state: {str(e)}")
-        
-        # Apply recalibration if enabled
-        if config.get("recalibration_enabled", False):
-            recalibration_method = config.get("recalibration_method", "linear")
-            context = {
-                "domain": config.get("domain", "general"),
-                "entity_id": entity_id
-            }
-            
-            original_certainty = result.get("certainty", 0.5)
-            recalibrated_certainty = recalibrate_certainty(original_certainty, context, recalibration_method)
-            
-            result["certainty"] = recalibrated_certainty
-            result["original_certainty"] = original_certainty
-            
-            logging.info(f"Recalibrated certainty: {original_certainty:.4f} → {recalibrated_certainty:.4f}")
-            
-        # Add reasoning trace to metadata
-        timestamp = datetime.now().isoformat()
-        
-        # Create reasoning trace metadata
-        reasoning_trace = {
-            "timestamp": timestamp,
-            "approach": approach,
-            "entity_id": entity_id,
-            "outcome": result.get("outcome"),
-            "certainty": result.get("certainty"),
-            "evidence_weights": result.get("evidence_weights"),
-            "posteriors": result.get("posteriors"),
-            "chain_weights": result.get("chain_weights"),
-            "update_steps": result.get("update_steps"),
-            "conclusions_count": len(result.get("conclusions", []))
         }
-        
-        # Add the reasoning trace to state metadata
-        if "reasoning_traces" not in state["metadata"]:
-            state["metadata"]["reasoning_traces"] = []
-            
-        state["metadata"]["reasoning_traces"].append(reasoning_trace)
-        
-        # Add reasoning trace to result for explanation generation
-        result["reasoning_trace"] = reasoning_trace
-        
-        return result
-        
-    except Exception as e:
-        error_msg = f"Reasoning failed with approach '{approach}': {str(e)}"
-        logging.error(error_msg)
-        raise ValueError(error_msg)
-
-
-def generate_entity_output(entity_id: str, 
-                          entity_name: str, 
-                          reasoning_result: Dict[str, Any], 
-                          output_schema: Dict[str, Any],
-                          llm_options: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generate output for an entity according to the specified schema.
-    
-    Args:
-        entity_id (str): Identifier of the entity
-        entity_name (str): Name of the entity
-        reasoning_result (dict): Results from the reasoning process
-        output_schema (dict): Output schema specification from configuration
-        llm_options (dict): LLM options for generating natural language explanations
-        
-    Returns:
-        dict: Formatted output dictionary for the entity
-    """
-    output = {
-        "entity_id": entity_id,
-        "entity_name": entity_name,
-        "outcome": reasoning_result.get("outcome", "UNKNOWN"),
-        "certainty": reasoning_result.get("certainty", 0.5)
-    }
-    
-    # Add fields based on output schema
-    fields = output_schema.get("fields", [])
-    
-    for field in fields:
-        field_name = field.get("name", "")
-        field_type = field.get("type", "string")
-        
-        # Skip already added fields
-        if field_name in output:
-            continue
-        
-        # Handle special field types
-        if field_name == "reasoning":
-            output[field_name] = generate_reasoning_output(reasoning_result, output_schema, llm_options)
-        elif field_name in reasoning_result:
-            output[field_name] = reasoning_result[field_name]
-    
-    # Include reasoning trace if requested
-    if output_schema.get("include_reasoning_trace", False):
-        output["reasoning_trace"] = reasoning_result.get("reasoning_trace", {})
-    
-    return output
-
-
-def generate_reasoning_output(reasoning_result: Dict[str, Any], 
-                             output_schema: Dict[str, Any],
-                             llm_options: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generate reasoning output according to the schema.
-    
-    Args:
-        reasoning_result (dict): Results from the reasoning process
-        output_schema (dict): Output schema specification
-        llm_options (dict): LLM options for generating natural language explanations
-        
-    Returns:
-        dict: Formatted reasoning output
-    """
-    reasoning_output = {}
-    
-    # Add signal counts if available
-    if "signal_counts" in reasoning_result:
-        reasoning_output["positive_signals"] = reasoning_result["signal_counts"].get("positive", 0)
-        reasoning_output["negative_signals"] = reasoning_result["signal_counts"].get("negative", 0)
-        reasoning_output["neutral_signals"] = reasoning_result["signal_counts"].get("neutral", 0)
-    
-    # Add evidence weights if available
-    if "evidence_weights" in reasoning_result:
-        reasoning_output["evidence_weights"] = reasoning_result["evidence_weights"]
-    
-    # Add posteriors if available
-    if "posteriors" in reasoning_result:
-        reasoning_output["posteriors"] = reasoning_result["posteriors"]
-    
-    # Add chain weights if available
-    if "chain_weights" in reasoning_result:
-        reasoning_output["chain_weights"] = reasoning_result["chain_weights"]
-    
-    # Generate key factors
-    conclusions = reasoning_result.get("conclusions", [])
-    key_factors = []
-    
-    for conclusion in conclusions:
-        factor = {
-            "factor": conclusion["identifier"],
-            "text": conclusion.get("attributes", {}).get("text", ""),
-            "certainty": conclusion.get("attributes", {}).get("certainty", 0.5)
-        }
-        
-        # Determine impact if possible
-        if "signal_type" in conclusion.get("attributes", {}):
-            factor["impact"] = conclusion["attributes"]["signal_type"]
-        
-        key_factors.append(factor)
-    
-    reasoning_output["key_factors"] = key_factors
-    
-    # Generate natural language explanation if requested
-    reasoning_trace = reasoning_result.get("reasoning_trace", None)
-    
-    if reasoning_trace and output_schema.get("include_explanation", True):
-        try:
-            explanation_context = {
-                "domain": output_schema.get("domain", "general"),
-                "entity_id": reasoning_result.get("entity_id", ""),
-                "recommendation": reasoning_result.get("outcome", ""),
-                "certainty": reasoning_result.get("certainty", 0.5)
-            }
-            
-            explanation = generate_explanation(reasoning_trace, explanation_context, llm_options)
-            reasoning_output["explanation"] = explanation
-            
-        except Exception as e:
-            logging.warning(f"Failed to generate explanation: {str(e)}")
-    
-    return reasoning_output
-
-
-def save_results(output: Dict[str, Any], output_path: str) -> bool:
-    """
-    Save results to the specified output path.
-    
-    Args:
-        output (dict): Output dictionary to save
-        output_path (str): File path where results should be saved
-        
-    Returns:
-        bool: True if results were successfully saved, False otherwise
-    """
-    try:
-        # Create directory if it doesn't exist
-        output_dir = os.path.dirname(output_path)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        # Handle numpy arrays for JSON serialization
-        def numpy_converter(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            if isinstance(obj, np.integer):
-                return int(obj)
-            if isinstance(obj, np.floating):
-                return float(obj)
-            raise TypeError(f"Unserializable object: {type(obj)}")
-        
-        # Write the results
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=2, ensure_ascii=False, default=numpy_converter)
-        
-        return True
-        
-    except Exception as e:
-        logging.error(f"Failed to save results: {str(e)}")
-        return False
-
 
 if __name__ == "__main__":
     import argparse
